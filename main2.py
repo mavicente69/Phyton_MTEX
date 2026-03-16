@@ -55,7 +55,7 @@ def main():
     # B. Componentes Ideales (Laminación - 50%)
     # Definimos la componente Basal [0, 0, 0]
     ori_basal = Orientation(Rotation.from_euler(np.deg2rad([0, 0, 0])))
-    odf_laminacion = ODFComponent(ori_basal, pesos=[0.0], kernels=k_comp, 
+    odf_laminacion = ODFComponent(ori_basal, pesos=[0.1], kernels=k_comp, 
                                   crystal_sym=cryst_sym, sample_sym=samp_sym)
 
     # C. Textura de Fibra (Deformación - 30%)
@@ -135,7 +135,7 @@ def main():
     Phi_fijo = 60
     phi2_fijo = 0
     
-    # 3. Armamos la matriz (N, 3) con los ángulos de Euler
+     # 3. Armamos la matriz (N, 3) con los ángulos de Euler
     eulers_linea = np.column_stack((
         phi1_vals, 
         np.full_like(phi1_vals, Phi_fijo), 
@@ -162,8 +162,15 @@ def main():
     ax_perfil.legend()
     fig_perfil.tight_layout()
 
-    # Mostrar todos los gráficos juntos
+     # Mostrar todos los gráficos juntos
     plt.show()
+    
+    
+     # TEST FOURIER
+    print("\n--- TEST DE FOURIER ---")
+    coefs = odf_total.calc_fourier_coeffs(L_max=4)
+    print(f"Total de armónicos calculados: {len(coefs)}")
+    print(f"C(0,0,0) (Integral total) = {coefs[(0,0,0)]:.4f}")
 
 if __name__ == "__main__":
     main()

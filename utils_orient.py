@@ -1,11 +1,5 @@
 # -*- coding: utf-8 -*-
 """
-Created on Thu Mar  5 14:18:33 2026
-
-@author: mavic
-"""
-# -*- coding: utf-8 -*-
-"""
 Módulo de cálculo de Figuras de Polos (Grilla Hexagonal + LUT + KD-Tree Multihilo)
 Entorno: texturaPy3.10
 """
@@ -54,13 +48,20 @@ def calc_pole_figures(odf_obj, lista_hkl, resolution=30):
 
     for i, hkl in enumerate(lista_hkl):
         dens = np.zeros(v_g.size)
-        comps = odf_obj.components if hasattr(odf_obj, 'components') else [odf_obj]
+        
+        # Corrección: Compatibilidad con ODFMixed (español e inglés)
+        if hasattr(odf_obj, 'componentes'):
+            comps = odf_obj.componentes
+        elif hasattr(odf_obj, 'components'):
+            comps = odf_obj.components
+        else:
+            comps = [odf_obj]
 
         for c in comps:
             pg = c.crystal_sym.point_group if hasattr(c.crystal_sym, 'point_group') else c.crystal_sym
             
             # ====================================================================
-            # 1, 2 y 3. COMPONENTES IDEALES, ISOTRÓPICAS Y FIBRAS
+            # 1. COMPONENTES IDEALES
             # ====================================================================
             if hasattr(c, 'orientaciones') and hasattr(c, 'kernels'): 
                 for idx in range(c.orientaciones.size):
@@ -75,15 +76,18 @@ def calc_pole_figures(odf_obj, lista_hkl, resolution=30):
                     if vals.ndim > 1: vals = np.sum(vals, axis=1)
                     dens += (c.pesos[idx] / v_p.shape[0]) * vals.flatten()
             
-            elif hasattr(c, 'peso') and not hasattr(c, 'cristal_dir'): 
-                dens += c.peso
-            
-            elif hasattr(c, 'cristal_dir'): 
+            # ====================================================================
+            # 2. TEXTURAS DE FIBRA
+            # ====================================================================
+            elif hasattr(c, 'hkl') and hasattr(c, 'uvw'): 
                 p_fam_data = (pg * hkl).data.astype(float)
                 p_fam_u = p_fam_data / np.linalg.norm(p_fam_data, axis=1, keepdims=True)
-                c_dir_u = c.cristal_dir.data.reshape(-1, 3).astype(float)
-                c_dir_u /= np.linalg.norm(c_dir_u, axis=1, keepdims=True)
-                m_dir_u = c.muestra_dir.data.reshape(-1, 3).astype(float)
+                
+                # Leemos los nombres correctos: c.hkl y c.uvw
+                c_dir_data = (pg * c.hkl).data.astype(float) 
+                c_dir_u = c_dir_data / np.linalg.norm(c_dir_data, axis=1, keepdims=True)
+                
+                m_dir_u = c.uvw.data.reshape(-1, 3).astype(float)
                 m_dir_u /= np.linalg.norm(m_dir_u, axis=1, keepdims=True)
                 
                 d_lat = np.arccos(np.clip(np.abs(np.dot(p_fam_u, c_dir_u.T)), 0.0, 1.0)).flatten()
@@ -94,6 +98,12 @@ def calc_pole_figures(odf_obj, lista_hkl, resolution=30):
                     perimetro_fibra = 2 * np.pi * np.sin(dl)
                     factor_forma = 1.0 / perimetro_fibra if perimetro_fibra > 0.1 else 1.0
                     dens += (c.peso / len(d_lat)) * factor_forma * vals
+
+            # ====================================================================
+            # 3. TEXTURA ISOTRÓPICA (AZAR)
+            # ====================================================================
+            elif hasattr(c, 'peso') and not hasattr(c, 'hkl') and not hasattr(c, 'orientaciones'): 
+                dens += c.peso
 
             # ====================================================================
             # 4. ODF DISCRETA MASIVA (Núcleo Triclínico + Multihilo + LUT)

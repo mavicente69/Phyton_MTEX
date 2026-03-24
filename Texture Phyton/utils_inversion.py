@@ -3,7 +3,7 @@
 Motor de Inversión de Textura Continuo (Estilo MTEX)
 Algoritmo: M-ART (Richardson-Lucy) con BLAS Multi-hilo
 Modelo: Phon Estricto extraído del piso MUD global de las PFs
-Calibración: Isotropía MUD Estricta con Topología SO(3) Equiespaciada
+Calibración: Isotropía MUD Estricta con Métrica de Euler (sin(Phi))
 Estabilidad: Pre-Normalización MUD + Escalador Híbrido
 Entorno: texturaPy3.10
 """
@@ -13,19 +13,19 @@ from orix.quaternion import Orientation
 
 from utils_odf import ODFComponent, ODFIsotropic
 from utils_kernels import OrientationKernel
-from utils_so3 import SO3Grid  # <--- IMPORTAMOS NUESTRA NUEVA CLASE TOPOLÓGICA
 
 def reconstruir_odf_nnls(lista_pfs_exp, fase_cristal, simetria_muestra=None, tipo_kernel='gaussian', resolucion_grados=None):
     """
     Motor M-ART robusto a variaciones extremas de escala (ej. factores de 1000x)
-    mediante una pre-normalización de volumen y grilla topológica SO(3).
+    mediante una pre-normalización de volumen antes de iterar.
     """
     print(f"\n=========================================================")
-    print(f"🧠 MOTOR DE INVERSIÓN (M-ART + PRE-NORM + PHON + SO3)")
+    print(f"🧠 MOTOR DE INVERSIÓN (M-ART + PRE-NORMALIZACIÓN + PHON)")
     print(f"=========================================================")
     t_total_inicio = time.time()
     
     simetria_real_usuario = simetria_muestra
+    simetria_calculo = None 
     
     if resolucion_grados is None:
         pts_promedio = np.mean([pf.direcciones.size for pf in lista_pfs_exp])
@@ -42,20 +42,31 @@ def reconstruir_odf_nnls(lista_pfs_exp, fase_cristal, simetria_muestra=None, tip
     kernel = OrientationKernel(tipo=tipo_kernel, fwhm_grados=fwhm)
     
     # ====================================================================
-    # 1. GENERAR GRILLA TOPOLÓGICA SO(3)
+    # 1. GENERAR GRILLA DE EULER UNIFORME
     # ====================================================================
-    print(" -> Generando grilla topológica SO(3) en la Zona Fundamental...")
+    print(" -> Generando grilla de Euler uniforme...")
+    sim_name = getattr(fase_cristal.point_group, 'name', str(fase_cristal.point_group))
     
-    # Instanciamos nuestra clase para que se encargue de toda la matemática de recorte
-    grilla_so3 = SO3Grid(
-        resolucion_grados=resolucion_grados, 
-        simetria_cristal=fase_cristal.point_group, 
-        simetria_muestra=simetria_real_usuario
-    )
+    if simetria_calculo is not None and getattr(simetria_calculo, 'name', '') in ['222', 'mmm', 'D2h', 'm-m-m']:
+        lim_phi1 = 90
+    else: lim_phi1 = 360
+        
+    p1 = np.arange(0, lim_phi1 + resolucion_grados, resolucion_grados)
+    P  = np.arange(0, 90 + resolucion_grados, resolucion_grados)
     
-    oris_base = grilla_so3.orientaciones
-    N = grilla_so3.N
-    print(f" -> Espacio SO(3) generado : {N} orientaciones base")
+    if '6' in sim_name or fase_cristal.point_group.size in [12, 24]: lim_phi2 = 60
+    elif 'm-3m' in sim_name or fase_cristal.point_group.size in [24, 48]: lim_phi2 = 90
+    else: lim_phi2 = 360 
+        
+    p2 = np.arange(0, lim_phi2 + resolucion_grados, resolucion_grados)
+    
+    P1, PP, P2 = np.meshgrid(p1, P, p2, indexing='ij')
+    euler_grid = np.column_stack((P1.ravel(), PP.ravel(), P2.ravel()))
+    
+    oris_crudas = Orientation.from_euler(np.radians(euler_grid), symmetry=fase_cristal.point_group)
+    oris_base = oris_crudas.unique()
+    N = oris_base.size
+    print(f" -> Espacio de Euler generado : {N} orientaciones base")
     
     # ====================================================================
     # 2. PREPARAR VECTOR EXPERIMENTAL (b) Y PRE-NORMALIZACIÓN MUD
@@ -64,9 +75,10 @@ def reconstruir_odf_nnls(lista_pfs_exp, fase_cristal, simetria_muestra=None, tip
     b_original_list = []
     pf_limites = []
     idx_actual = 0
-    factores_pre_escala = []
+    factores_pre_escala = [] # Guardamos el factor bruto para corregir al final
 
     for pf in lista_pfs_exp:
+        # Calcular el volumen integral (Media) usando el peso del área esférica
         z_coords = pf.direcciones.data[:, 2]
         angulos_polares = np.arccos(np.clip(np.abs(z_coords), 0.0, 1.0))
         pesos_area = np.sin(angulos_polares)
@@ -74,6 +86,7 @@ def reconstruir_odf_nnls(lista_pfs_exp, fase_cristal, simetria_muestra=None, tip
         
         intensidad_media = np.sum(pf.intensidades * pesos_area) / np.sum(pesos_area)
         
+        # Llevamos la media artificialmente a 1.0
         factor_pre = 1.0 / intensidad_media if intensidad_media > 0 else 1.0
         b_norm = pf.intensidades * factor_pre
         
@@ -148,11 +161,14 @@ def reconstruir_odf_nnls(lista_pfs_exp, fase_cristal, simetria_muestra=None, tip
             A[fila_inicio : fila_inicio + M_pf, start:end] = suma_polos_pf.T
             fila_inicio += M_pf
             
-    # --- CALIBRACIÓN MUD ESTRICTA DE LA MATRIZ (TOPOLOGÍA SO3) ---
-    print(" -> Calibrando Matriz A a espacio MUD estricto (Topología SO3)...")
-    # ¡Chau a la métrica de Euler (sin(Phi))! Ahora todas las celdas pesan exactamente lo mismo
-    w_metric = np.ones(N) / N
+    # --- CALIBRACIÓN MUD ESTRICTA DE LA MATRIZ ---
+    print(" -> Calibrando Matriz A a espacio MUD estricto (Métrica de Euler)...")
+    angulos_euler = oris_base.to_euler()
+    phi_angulos = angulos_euler[:, 1]
+    pesos_volumen = np.sin(phi_angulos)
+    pesos_volumen[pesos_volumen == 0] = 1e-6 
     
+    w_metric = pesos_volumen / np.sum(pesos_volumen)
     b_iso_dummy = A @ w_metric
     b_iso_dummy[b_iso_dummy == 0] = 1e-8
     
@@ -172,7 +188,7 @@ def reconstruir_odf_nnls(lista_pfs_exp, fase_cristal, simetria_muestra=None, tip
     print(f" -> Optimizando sistema       : M-ART con Extracción MUD de Phon (Alpha={alpha})...")
     
     b_ajustado = np.maximum(b_original.copy(), 1e-4)
-    factores_escala = np.ones(len(lista_pfs_exp))
+    factores_escala = np.ones(len(lista_pfs_exp)) # Este es solo el ajuste fino
     w = np.copy(w_metric)
     A_sum = np.sum(A, axis=0) + 1e-8 
     
@@ -315,6 +331,8 @@ def reconstruir_odf_nnls(lista_pfs_exp, fase_cristal, simetria_muestra=None, tip
     # ====================================================================
     print(f" -> Sincronizando escalas MUD experimentales vs teóricas...")
     for i, pf in enumerate(lista_pfs_exp):
+        # El factor FINAL que neutraliza el sabotaje es la composición 
+        # de la normalización brutal inicial y el ajuste fino
         factor_total = factores_pre_escala[i] * factores_escala[i]
         pf.intensidades *= factor_total
         print(f"    * Polo {pf.hkl} corregido por factor total: {factor_total:.3e}")

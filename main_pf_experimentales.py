@@ -1,33 +1,20 @@
 # -*- coding: utf-8 -*-
 """
-Created on Mon Mar  9 11:01:00 2026
-
-@author: mavic
+Script Principal - Reconstrucción de Texturas desde PFs Experimentales
+Entorno: texturaPy3.10
 """
-
-# -*- coding: utf-8 -*-
-"""
-Created on Mon Mar  9 11:01:00 2026
-
-@author: mavic
-"""
-
-# -*- coding: utf-8 -*-
 import os
 import numpy as np
 import matplotlib.pyplot as plt
 from orix.crystal_map import Phase
 from orix.vector import Miller, Vector3d
 from diffpy.structure import Lattice, Structure
-
-# ACÁ ESTÁ EL CAMBIO 1: Sacamos Symmetry de acá
 from orix.quaternion import Rotation, Orientation
-
-# ACÁ ESTÁ EL CAMBIO 2: Importamos D2h para la simetría ortorrómbica
 from orix.quaternion.symmetry import D2h, C1
 
 from utils_wimv import reconstruir_odf_wimv
-from utils_pf import PoleFigure
+# ¡IMPORTAMOS TU FUNCIÓN GLOBAL ACÁ!
+from utils_pf import PoleFigure, plot_pf_comparison 
 from utils_odf import ODFDiscreta
 
 def main():
@@ -69,57 +56,121 @@ def main():
     rot_correccion = Orientation.from_axes_angles(Vector3d([0, 1, 0]), np.radians(90))
     mis_pfs_corregidas = [pf.rotate(rot_correccion) for pf in mis_pfs_originales]
 
-    # 1. WIMV
-    # ACÁ ESTÁ EL CAMBIO 3: Asignamos directamente D2h sin usar el texto 'mmm'
+    # =========================================================
+    # VISUALIZACIÓN 1: PFs EXPERIMENTALES RAW (COMO VIENEN)
+    # =========================================================
+    print("\n--- Graficando PFs experimentales originales (RAW) ---")
+    n_pfs = len(mis_pfs_corregidas)
+    fig0, axes0 = plt.subplots(1, n_pfs, figsize=(4.5 * n_pfs, 4.5))
+    if n_pfs == 1: axes0 = [axes0]
+    
+    for i, pf in enumerate(mis_pfs_corregidas):
+        hkl_str = ''.join([str(int(x)) for x in pf.hkl.hkil.flatten()])
+        pf.plot(ax=axes0[i], cmap='jet', direccion_x='vertical')
+        axes0[i].set_title(f"RAW EXP {{{hkl_str}}}", fontsize=12, fontweight='bold')
+    
+    plt.tight_layout()
+    plt.show(block=False) 
+    plt.pause(0.1)
+
+    # =========================================================
+    # RECONSTRUCCIÓN WIMV
+    # =========================================================
     simetria_chapa = D2h
     simetria_triclinic = C1
-    ss=C1
+    ss = C1
+    
     oris_wimv, pesos_wimv = reconstruir_odf_wimv(
         lista_pfs_exp=mis_pfs_corregidas, 
         fase_cristal=fase_zr,
-        simetria_muestra=ss, # ¡Acá le pasamos la simetría!
-        resolucion_grados=10,
-        iteraciones=10
+        simetria_muestra=ss, 
+        resolucion_grados=5.0,  # Resolución ajustada a 5 grados para evitar aplastar picos
+        iteraciones=25          # Más iteraciones para subir la aguja
     )
     
-    # 2. INSTANCIACIÓN DE TU CLASE
-    print("\n--- Recalculando Figuras de Polos desde tu clase ODFDiscreta ---")
-    mi_odf = ODFDiscreta(orientaciones=oris_wimv, pesos=pesos_wimv, crystal_sym=fase_zr, sample_sym=ss)
-    
+    print("\n--- Instanciando clase ODFDiscreta ---")
+    mi_odf = ODFDiscreta(orientaciones=oris_wimv, pesos=pesos_wimv, crystal_sym=fase_zr.point_group, sample_sym=ss)    
 
     # =========================================================
-    # 8. VISUALIZACIÓN DE LA ODF (SECCIONES DE EULER)
+    # VISUALIZACIÓN 2: SECCIONES DE LA ODF (Eje phi2)
     # =========================================================
     print("\n--- Generando Secciones de la ODF ---")
+    cortes_hexagonales = [0, 15, 30, 45, 60]
     
-    # Para el Zirconio (Hexagonal), la región fundamental de phi2 llega hasta 60°.
-    # Los cortes clásicos para ver las fibras basales y prismáticas son 0° y 30°.
-    # Llamamos a TU función nativa con la nueva sintaxis:
-    mi_odf.plot_sections(sections=[0, 30, 60 ,90, 120, 150, 180], axis='phi1', res_grados=5)
+    mi_odf.plot_sections(
+        sections=cortes_hexagonales, 
+        axis='phi2',          
+        res_grados=5.0,       
+        cmap='jet'
+    )
 
     plt.tight_layout()
-    plt.show() # <- Este plt.show() final mostrará todas las ventanas juntas
+    plt.show(block=False)
+    plt.pause(0.1)
     
- 
-    # 3. LLAMADA A TU FUNCIÓN NATIVA
+    # =========================================================
+    # RECALCULAR Y COMPARAR PFs USANDO TU FUNCIÓN NATIVA
+    # =========================================================
+    print("\n--- Generando Comparativa EXP (Escalada) vs CALC ---")
     planos_medidos = [pf.hkl for pf in mis_pfs_corregidas]
-    pfs_recalculadas = mi_odf.calc_pole_figures(lista_hkl=planos_medidos)
-
-    # 4. GRÁFICOS
-    print("\n--- Generando Comparativa EXP vs CALC ---")
-    n_pfs = len(mis_pfs_corregidas)
-    fig2, axes2 = plt.subplots(2, n_pfs, figsize=(4.5 * n_pfs, 9))
     
-    for i in range(n_pfs):
-        hkl_str = archivos_exp[i]["file"].split('_')[-1].replace('.txt', '')
-        mis_pfs_corregidas[i].plot(ax=axes2[0, i], cmap='jet', direccion_x='vertical')
-        axes2[0, i].set_title(f"EXP {hkl_str}", fontsize=12, fontweight='bold')
-        
-        pfs_recalculadas[i].plot(ax=axes2[1, i], cmap='jet', direccion_x='vertical')
-        axes2[1, i].set_title(f"CALC {hkl_str}", fontsize=12, fontweight='bold')
+    # Recalculamos con buena resolución para evitar bordes blancos
+    pfs_recalculadas = mi_odf.calc_pole_figures(lista_hkl=planos_medidos, resolution=20)
 
-    plt.tight_layout()
+    # Armamos unos títulos limpios para la función comparativa
+    nombres_planos = [f"Plano {{{''.join([str(int(x)) for x in pf.hkl.hkil.flatten()])}}}" for pf in mis_pfs_corregidas]
+
+    # Llamamos a tu función, que automáticamente gestiona los pares "Entrada/Salida" y unifica la escala por hkl
+    plot_pf_comparison(
+        pfs_in=mis_pfs_corregidas,
+        pfs_out=pfs_recalculadas,
+        titulos=nombres_planos,
+        suptitle="Comparativa de Figuras de Polos (WIMV)",
+        unificar_escala='hkl',
+        direccion_x='vertical'
+    )
+    
+    # Este plt.show final frena el script para que veas todas las ventanas
     plt.show() 
 
+    # =========================================================
+    # CUANTIFICACIÓN AUTOMÁTICA DE LA TEXTURA (ZIRCALOY)
+    # =========================================================
+    print("\n=========================================================")
+    print("📈 REPORTE CUANTITATIVO DE LA TEXTURA (MÉTODO WIMV)")
+    print("=========================================================")
+    
+    # 1. J-Index (Severidad Global de la Textura)
+    # Un material isotrópico tiene J=1. Texturas de laminación fuertes suelen dar J=4 a 15+
+    j_index = mi_odf.calc_texture_index(res_grados=5.0)
+    print(f" -> J-Index (Fuerza global de la textura) : {j_index:.2f}")
+    
+    # 2. Fracciones de Volumen de Componentes Claves
+    print("\n -> Fracciones de Volumen (Radio de integración esférica: ±15.0°):")
+    radio_busqueda = 15.0
+    
+    # A. Fibra Basal Inclinada (Típica de deformación por laminación, ~30° hacia la dirección transversal)
+    centro_basal_inclinado = [0, 30, 0]
+    vol_basal_inc = mi_odf.calc_component_volume(
+        center_euler=centro_basal_inclinado, radius_degrees=radio_busqueda, res_grados=5.0
+    )
+    print(f"    * Fibra Basal Inclinada {centro_basal_inclinado} : {vol_basal_inc * 100:>6.2f} %")
+    
+    # B. Polo Basal Normal (Eje C apuntando exactamente al plano de la normal, ND)
+    # En chapas muy deformadas en frío, este número suele ser bajísimo.
+    centro_basal_normal = [0, 0, 0]
+    vol_basal_norm = mi_odf.calc_component_volume(
+        center_euler=centro_basal_normal, radius_degrees=radio_busqueda, res_grados=5.0
+    )
+    print(f"    * Polo Basal Normal     {centro_basal_normal} : {vol_basal_norm * 100:>6.2f} %")
+    
+    # C. Fibra Prismática (Ejes C acostados en el plano de la chapa, Phi=90°)
+    centro_prismatica = [0, 90, 30] 
+    vol_prism = mi_odf.calc_component_volume(
+        center_euler=centro_prismatica, radius_degrees=radio_busqueda, res_grados=5.0
+    )
+    print(f"    * Fibra Prismática      {centro_prismatica} : {vol_prism * 100:>6.2f} %")
+    
+    print("=========================================================\n")
 if __name__ == "__main__":
     main()

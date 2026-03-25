@@ -60,8 +60,13 @@ def main():
     print(f" -> Centro ideal inyectado en: (0, 30, 0)")
     print(f" -> Nodos de la red de 5° encendidos para formar el ancho de 10°: {nodos_encendidos} orientaciones")
     
-    # 4. Instanciar la clase
-    mi_odf = ODFDiscreta(orientaciones=orientaciones, pesos=pesos, crystal_sym=fase_zr, sample_sym=C1)
+    # 4. Instanciar la clase (Extrayendo la simetría pura de la fase)
+    mi_odf = ODFDiscreta(
+    orientaciones=orientaciones, 
+    pesos=pesos, 
+    crystal_sym=fase_zr.point_group, # <--- ACÁ ESTÁ EL ARREGLO
+    sample_sym=C1
+    )   
     
     # ==========================================
     # PRUEBA A: CORTES DE LA ODF

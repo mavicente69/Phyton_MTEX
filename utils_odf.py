@@ -224,6 +224,9 @@ class ODF:
 # =========================================================================================
 # CLASE ODF COMPONENTE (Maneja Kernels y Fourier)
 # =========================================================================================
+# =========================================================================================
+# CLASE ODF COMPONENTE (Maneja Kernels y Fourier)
+# =========================================================================================
 class ODFComponent(ODF):
     def __init__(self, orientaciones, pesos, kernels, crystal_sym, sample_sym=None, lims=None):
         super().__init__(crystal_sym, sample_sym, lims=lims)
@@ -240,17 +243,33 @@ class ODFComponent(ODF):
         rot_targets = Rotation(target_orientations.data)
         total_density = np.zeros(rot_targets.size)
         
+        # 1. Calculamos la multiplicidad total por simetría
+        pg = self.crystal_sym.point_group if hasattr(self.crystal_sym, 'point_group') else self.crystal_sym
+        n_cryst = pg.size
+        n_samp = self.sample_sym.size if self.sample_sym is not None else 1
+        n_sym_total = n_cryst * n_samp
+        
         for i in range(self.orientaciones.size):
-            equiv_cryst = self.crystal_sym * self.orientaciones[i]
+            # Generamos TODAS las variantes cristalinas
+            equiv_cryst = pg * self.orientaciones[i]
             
+            # Generamos TODAS las variantes de muestra
             if self.sample_sym:
                 variantes = [ (op * equiv_cryst).data for op in self.sample_sym ]
                 equiv_rot = Rotation(np.vstack(variantes))
             else: 
                 equiv_rot = Rotation(equiv_cryst.data)
                 
+            # 2. Matriz de distancias a TODAS las variantes (shape: n_variantes, n_targets)
             dist_matrix = equiv_rot.angle_with_outer(rot_targets)
-            total_density += self.pesos[i] * self.kernels[i].evaluate(np.min(dist_matrix, axis=0), modo='odf')
+            
+            # 3. Evaluamos el kernel en todas las distancias
+            kernel_vals = self.kernels[i].evaluate(dist_matrix, modo='odf')
+            
+            # 4. SUMAMOS todas las colas de las campanas y DIVIDIMOS por la multiplicidad (Simetrización real)
+            density_comp = np.sum(kernel_vals, axis=0) / n_sym_total
+            
+            total_density += self.pesos[i] * density_comp
             
         return total_density
 
@@ -294,7 +313,6 @@ class ODFComponent(ODF):
                     C_total[(l, m, n)] += peso_variante * c_val
                 
         return C_total
-
 # =========================================================================================
 # CLASES DE TEXTURAS IDEALES Y MIXTAS
 # =========================================================================================
@@ -491,13 +509,15 @@ class ODFMixed(ODF):
 # =========================================================================================
 # CLASE ODF DISCRETA (KD-Tree Rápido)
 # =========================================================================================
+# =========================================================================================
+# CLASE ODF DISCRETA (KD-Tree Rápido con Interpolación Suave)
+# =========================================================================================
 class ODFDiscreta(ODF):
     def __init__(self, pesos, crystal_sym, euler_grid=None, orientaciones=None, sample_sym=None, lims=None):
         super().__init__(crystal_sym, sample_sym, lims=lims)
         
         pg = self.crystal_sym.point_group if hasattr(self.crystal_sym, 'point_group') else self.crystal_sym
         
-        # Flexibilidad: acepta objeto Orientation directo o grilla de Euler numérico
         if orientaciones is not None:
             self.orientaciones = orientaciones
         elif euler_grid is not None:
@@ -505,13 +525,10 @@ class ODFDiscreta(ODF):
         else:
             raise ValueError("Debes proveer 'euler_grid' o 'orientaciones'.")
             
-        # --- EL ARREGLO: Guardamos los pesos base como atributo de la clase ---
         self.pesos = np.array(pesos)
         
-        # 1. Simetría de Cristal (Broadcast explícito: M simetrías x N orientaciones)
         oris_sym = pg[:, np.newaxis] * self.orientaciones
         
-        # 2. Simetría de Muestra
         if self.sample_sym:
             variantes = [ (op * oris_sym).data for op in self.sample_sym ]
             q_data_matrix = np.vstack(variantes)
@@ -519,20 +536,34 @@ class ODFDiscreta(ODF):
             q_data_matrix = oris_sym.data
             
         q_data = q_data_matrix.reshape(-1, 4)
-        
-        # 3. Simetría de Friedel en el espacio 4D (q y -q)
         q_data_full = np.vstack([q_data, -q_data])
         
-        # 4. Expansión de pesos para mapear la grilla extendida
         multiplicador = pg.size * (self.sample_sym.size if self.sample_sym is not None else 1)
         pesos_exp = np.tile(self.pesos, multiplicador)
         self.pesos_full = np.concatenate([pesos_exp, pesos_exp])
         
-        # 5. Árbol de búsqueda espacial
+        from scipy.spatial import cKDTree
         self.tree = cKDTree(q_data_full)
         
     def evaluate(self, target_orientations):
-        """ Evalúa la densidad ODF buscando el cuaternión discreto más cercano. """
+        """ Evalúa la densidad ODF con interpolación Gaussiana de los vecinos """
         q_targets = target_orientations.data
-        dist, idx = self.tree.query(q_targets)
-        return self.pesos_full[idx]
+        
+        # En vez de 1 solo vecino (que genera hexágonos duros), usamos 5 para fundir
+        dist, idx = self.tree.query(q_targets, k=5)
+        
+        # Evitamos división por cero si cae exactamente encima de un nodo
+        dist = np.maximum(dist, 1e-6)
+        
+        # Usamos una campana de Gauss sobre la distancia para un suavizado estético
+        # sigma = 0.1 es aprox 6-8 grados de fundido, ideal para borrar la grilla
+        sigma = 0.10
+        pesos_vecinos = np.exp(-0.5 * (dist / sigma)**2)
+        
+        # Normalizamos los pesos gaussianos
+        suma_pesos = np.sum(pesos_vecinos, axis=1, keepdims=True)
+        pesos_vecinos /= suma_pesos
+        
+        # Extraemos los valores y hacemos la media ponderada
+        valores_vecinos = self.pesos_full[idx]
+        return np.sum(valores_vecinos * pesos_vecinos, axis=1)

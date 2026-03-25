@@ -209,7 +209,7 @@ def main():
         fase_cristal=fase_cristal, 
         simetria_muestra=ss,
         tipo_kernel='gaussian',
-        resolucion_grados=3 
+        resolucion_grados=10 
     )
 
     # ====================================================================
@@ -236,5 +236,44 @@ def main():
 
     plt.show()
 
+    # =========================================================
+    # CUANTIFICACIÓN AUTOMÁTICA DE LA TEXTURA (ZIRCALOY)
+    # =========================================================
+    print("\n=========================================================")
+    print("📈 REPORTE CUANTITATIVO DE LA TEXTURA (MÉTODO NNLS)")
+    print("=========================================================")
+    
+    # 1. J-Index (Severidad Global de la Textura)
+    # Un material isotrópico tiene J=1. Texturas de laminación fuertes suelen dar J=4 a 15+
+    j_index = mi_odf.calc_texture_index(res_grados=5.0)
+    print(f" -> J-Index (Fuerza global de la textura) : {j_index:.2f}")
+    
+    # 2. Fracciones de Volumen de Componentes Claves
+    print("\n -> Fracciones de Volumen (Radio de integración esférica: ±15.0°):")
+    radio_busqueda = 15.0
+    
+    # A. Fibra Basal Inclinada (Típica de deformación por laminación, ~30° hacia la dirección transversal)
+    centro_basal_inclinado = [0, 30, 0]
+    vol_basal_inc = mi_odf.calc_component_volume(
+        center_euler=centro_basal_inclinado, radius_degrees=radio_busqueda, res_grados=5.0
+    )
+    print(f"    * Fibra Basal Inclinada {centro_basal_inclinado} : {vol_basal_inc * 100:>6.2f} %")
+    
+    # B. Polo Basal Normal (Eje C apuntando exactamente al plano de la normal, ND)
+    # En chapas muy deformadas en frío, este número suele ser bajísimo.
+    centro_basal_normal = [0, 0, 0]
+    vol_basal_norm = mi_odf.calc_component_volume(
+        center_euler=centro_basal_normal, radius_degrees=radio_busqueda, res_grados=5.0
+    )
+    print(f"    * Polo Basal Normal     {centro_basal_normal} : {vol_basal_norm * 100:>6.2f} %")
+    
+    # C. Fibra Prismática (Ejes C acostados en el plano de la chapa, Phi=90°)
+    centro_prismatica = [0, 90, 30] 
+    vol_prism = mi_odf.calc_component_volume(
+        center_euler=centro_prismatica, radius_degrees=radio_busqueda, res_grados=5.0
+    )
+    print(f"    * Fibra Prismática      {centro_prismatica} : {vol_prism * 100:>6.2f} %")
+    
+    print("=========================================================\n")
 if __name__ == "__main__":
     main()

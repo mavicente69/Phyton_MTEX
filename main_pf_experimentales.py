@@ -172,5 +172,32 @@ def main():
     print(f"    * Fibra Prismática      {centro_prismatica} : {vol_prism * 100:>6.2f} %")
     
     print("=========================================================\n")
+
+    # =========================================================
+    # EXTRACCIÓN DE COEFICIENTES DE FOURIER (CROSS-CHECK MTEX)
+    # =========================================================
+    print("\n=========================================================")
+    print("🌀 COEFICIENTES DE FOURIER (Triclínico-Triclínico)")
+    print("=========================================================")
+    L_MAX = 4  # Nivel de corte para la comparación
+    
+    coefs_fourier = mi_odf.calc_fourier_coeffs(L_MAX)
+    
+    print(f"\n L |  m |  n |      Real      |    Imaginario  ")
+    print("-----------------------------------------------")
+    
+    # En materiales típicos, los L impares suelen ser cero por la simetría de inversión.
+    # Filtramos valores muy chicos (polvo numérico) para tener una tabla limpia.
+    for l in range(0, L_MAX + 1, 2):  
+        for m in range(-l, l + 1):
+            for n in range(-l, l + 1):
+                val = coefs_fourier.get((l, m, n), 0.0j)
+                
+                if abs(val) > 1e-4:
+                    print(f"{l:2d} | {m:2d} | {n:2d} | {val.real:12.6f} | {val.imag:12.6f}")
+                    
+    print("=========================================================\n")
+
+
 if __name__ == "__main__":
     main()

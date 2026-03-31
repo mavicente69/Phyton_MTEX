@@ -1,15 +1,25 @@
 # -*- coding: utf-8 -*-
 """
-Created on Mon Mar  9 09:17:01 2026
-
-@author: mavic
+Módulo de Figuras de Polos (PF).
+Define la clase PoleFigure como un objeto independiente que encapsula 
+la grilla estereográfica, las intensidades y los métodos de graficado.
+Soporta construcción analítica directa desde coeficientes de Fourier.
 """
-
 import numpy as np
 import matplotlib.pyplot as plt
 from orix.vector import Vector3d
 from orix.quaternion import Rotation, Orientation
 from utils_vector3d import proyectar_igual_area
+
+# --- COMPATIBILIDAD SCIPY ---
+try:
+    from scipy.special import sph_harm_y
+    def sph_harm(m, l, azim, polar):
+        # SciPy nuevo invirtió el orden de los argumentos
+        return sph_harm_y(l, m, polar, azim)
+except ImportError:
+    from scipy.special import sph_harm
+# ----------------------------
 
 class PoleFigure:
     """
@@ -31,14 +41,84 @@ class PoleFigure:
         if self.direcciones.size != self.intensidades.size:
             raise ValueError(f"Desajuste de tamaño: {self.direcciones.size} direcciones vs {self.intensidades.size} intensidades.")
 
+    @classmethod
+    def from_fourier(cls, coefs, hkl_miller, crystal_sym, resolution=2.5):
+        """
+        Genera una Figura de Polos evaluando analíticamente los coeficientes 
+        de Fourier (C_lmn) sobre una grilla esférica (Hemisferio Norte).
+        Aplica la Ley de Friedel (solo armónicos pares).
+        """
+        import time
+        t0 = time.time()
+        
+        # Obtenemos la etiqueta visual del plano (ej: "0001" o "10-10")
+        hkl_vals = hkl_miller.hkil.flatten() if hasattr(hkl_miller, 'hkil') else hkl_miller.hkl.flatten()
+        label_plano = ''.join([str(int(x)) for x in hkl_vals])
+        print(f" -> Construyendo Figura de Polos {{{label_plano}}} desde Fourier...")
+        
+        # 1. Crear Grilla Esférica de la Muestra (Solo Hemisferio Norte, Z >= 0)
+        azi = np.radians(np.arange(0, 360, resolution))
+        pol = np.radians(np.arange(0, 90 + resolution, resolution))
+        AZI, POL = np.meshgrid(azi, pol)
+        
+        X_sph = np.sin(POL) * np.cos(AZI)
+        Y_sph = np.sin(POL) * np.sin(AZI)
+        Z_sph = np.cos(POL)
+        
+        polar_y = POL.ravel()
+        azim_y = AZI.ravel()
+        
+        # Empaquetamos las direcciones de la grilla en un Vector3d de orix
+        direcciones_muestra = Vector3d(np.column_stack((X_sph.ravel(), Y_sph.ravel(), Z_sph.ravel())))
+
+        # 2. Obtener polos cristalográficos simetrizados en coordenadas cartesianas (Vector3d)
+        pg = crystal_sym.point_group if hasattr(crystal_sym, 'point_group') else crystal_sym
+        hkl_simetricos = pg * hkl_miller
+        
+        # Normalizamos los vectores de los planos hkl a longitud 1
+        coords_hkl = hkl_simetricos.data.astype(float)
+        normas = np.linalg.norm(coords_hkl, axis=1, keepdims=True)
+        normas[normas == 0] = 1.0
+        polos_simetricos = coords_hkl / normas
+        num_h = len(polos_simetricos)
+        
+        # 3. Sumatoria de Fourier (Ley de Friedel: L pares)
+        intensities = np.zeros(len(polar_y), dtype=complex)
+        L_max = max([key[0] for key in coefs.keys()])
+        
+        for h_vec in polos_simetricos:
+            hx, hy, hz = h_vec
+            polar_h = np.arccos(np.clip(hz, -1.0, 1.0))
+            azim_h = np.arctan2(hy, hx)
+
+            for l in range(0, L_max + 1, 2):  # Solo pares
+                factor = (4.0 * np.pi) / (2 * l + 1)
+                for m in range(-l, l + 1):
+                    for n in range(-l, l + 1):
+                        C_lmn = coefs.get((l, m, n), 0.0j)
+                        if abs(C_lmn) > 1e-8:
+                            # sph_harm mapeado correctamente gracias al bloque try/except
+                            Y_h = sph_harm(m, l, azim_h, polar_h)
+                            Y_y = sph_harm(n, l, azim_y, polar_y)
+                            
+                            intensities += C_lmn * factor * np.conj(Y_h) * Y_y / num_h
+
+        # 4. Limpiamos ruido numérico (Gibbs) garantizando intensidad positiva
+        intensidades_finales = np.maximum(np.real(intensities), 0.0)
+        
+        print(f"    [Completado en {time.time() - t0:.2f} s - Máximo MUD: {np.max(intensidades_finales):.2f}]")
+
+        # 5. Instanciamos y retornamos el objeto PoleFigure
+        return cls(direcciones=direcciones_muestra, 
+                   intensidades=intensidades_finales, 
+                   hkl=hkl_miller)
+
+
     def rotate(self, rotacion):
         """
         Rota la Figura de Polos aplicando una rotación espacial a sus direcciones.
         Retorna un nuevo objeto PoleFigure con la rotación aplicada (inmutable).
-        
-        rotacion: Puede ser un objeto Orientation/Rotation de orix o una lista de Euler [phi1, Phi, phi2].
         """
-        # 1. Procesamos la entrada (ahora acepta Orientation nativo)
         if isinstance(rotacion, (list, tuple, np.ndarray)):
             angulos_rad = np.radians(rotacion)
             rot_obj = Rotation.from_euler(angulos_rad)
@@ -47,24 +127,19 @@ class PoleFigure:
         else:
             raise TypeError("La rotación debe ser un objeto Orientation, Rotation o una lista de Euler [phi1, Phi, phi2].")
             
-        # 2. Aplicamos la rotación matemática a los vectores
         direcciones_rotadas = rot_obj * self.direcciones
         
-        # 3. Simetría antipodal: Si un polo cae al hemisferio sur (Z < 0), lo proyectamos al norte
         coords = direcciones_rotadas.data
         coords_upper = np.where(coords[:, 2:3] < 0, -coords, coords)
         nuevas_direcciones = Vector3d(coords_upper)
         
-        # 4. Devolvemos una NUEVA Figura de Polos
         return PoleFigure(direcciones=nuevas_direcciones, 
                           intensidades=self.intensidades, 
                           hkl=self.hkl)
 
     def plot(self, ax=None, cmap='jet', niveles=25, max_val=None, direccion_x='horizontal'):
         """
-        Grafica la Figura de Polos usando proyección de igual área.
-        direccion_x: 'horizontal' (X apunta al Este, Y al Norte) o 
-                     'vertical' (X apunta al Norte, Y al Oeste).
+        Grafica la Figura de Polos usando proyección de igual área (tricontourf).
         """
         if ax is None:
             fig, ax = plt.subplots(figsize=(6, 6))
@@ -74,7 +149,6 @@ class PoleFigure:
 
         xp, yp = proyectar_igual_area(self.direcciones.data, np.ones(self.direcciones.size))
         
-        # Aplicamos la rotación geométrica para el ploteo si el usuario pide X vertical
         if direccion_x == 'vertical':
             xp_rot = -yp
             yp_rot = xp
@@ -96,7 +170,6 @@ class PoleFigure:
         ax.set_aspect('equal')
         ax.axis('off')
         
-        # Etiquetado automático de los Ejes de la Muestra
         offset = 1.15
         if direccion_x == 'horizontal':
             ax.text(offset, 0.0, 'X', ha='center', va='center', fontsize=12, fontweight='bold')
@@ -122,28 +195,17 @@ class PoleFigure:
 # ====================================================================
 
 def plot_pfs(lista_pfs, titulos=None, cmap='jet', max_val_global=False, direccion_x='horizontal'):
-    """
-    Grafica una lista de Figuras de Polos en una sola fila.
-    Aprovecha el método interno .plot() de cada PoleFigure.
-    """
     n = len(lista_pfs)
     fig, axes = plt.subplots(1, n, figsize=(5 * n, 5))
-    
-    if n == 1:
-        axes = [axes]
+    if n == 1: axes = [axes]
         
-    # Calcular máximo global si se solicita para unificar la barra de colores
     max_val = None
     if max_val_global:
         max_val = max([np.max(np.nan_to_num(pf.intensidades, nan=0.0)) for pf in lista_pfs])
 
     for i, ax in enumerate(axes):
         pf = lista_pfs[i]
-        
-        # Usamos tu método nativo de ploteo con tricontourf
         pf.plot(ax=ax, cmap=cmap, max_val=max_val, direccion_x=direccion_x)
-        
-        # Sobrescribimos el título si el usuario proveyó uno personalizado
         if titulos is not None:
             ax.set_title(titulos[i], fontsize=14, pad=20)
 
@@ -152,22 +214,11 @@ def plot_pfs(lista_pfs, titulos=None, cmap='jet', max_val_global=False, direccio
 
 
 def plot_pf_comparison(pfs_in, pfs_out, titulos=None, suptitle="Comparativa de Figuras de Polos", cmap='jet', unificar_escala='hkl', direccion_x='horizontal'):
-    """
-    Grafica dos listas de Figuras de Polos en 2 filas (Entrada vs Salida) para evaluar inversiones.
-    unificar_escala: 
-        - 'global': Misma escala para TODAS las 10 figuras.
-        - 'hkl': Cada par Entrada/Salida del mismo plano comparte su propia escala.
-        - 'fila': Una escala para toda la Entrada y otra para toda la Salida.
-        - 'independiente': Cada figura individual tiene su propia escala.
-    """
     n = len(pfs_in)
     fig, axes = plt.subplots(2, n, figsize=(5 * n, 10))
     fig.suptitle(suptitle, fontsize=16)
-    
-    if n == 1:
-        axes = axes.reshape(2, 1)
+    if n == 1: axes = axes.reshape(2, 1)
 
-    # Calcular máximos globales (por si se usa 'global' o 'fila')
     max_in_global = max([np.max(np.nan_to_num(pf.intensidades, nan=0.0)) for pf in pfs_in])
     max_out_global = max([np.max(np.nan_to_num(pf.intensidades, nan=0.0)) for pf in pfs_out])
     max_total = max(max_in_global, max_out_global)
@@ -176,33 +227,23 @@ def plot_pf_comparison(pfs_in, pfs_out, titulos=None, suptitle="Comparativa de F
         pf_in = pfs_in[i]
         pf_out = pfs_out[i]
         
-        # Máximos locales del par (mismo hkl)
         max_in_local = np.max(np.nan_to_num(pf_in.intensidades, nan=0.0))
         max_out_local = np.max(np.nan_to_num(pf_out.intensidades, nan=0.0))
         max_par = max(max_in_local, max_out_local)
         
-        # Selección de la escala según el modo
-        if unificar_escala == 'global':
-            max_in, max_out = max_total, max_total
-        elif unificar_escala == 'hkl':
-            max_in, max_out = max_par, max_par
-        elif unificar_escala == 'fila':
-            max_in, max_out = max_in_global, max_out_global
-        else: # independiente
-            max_in, max_out = None, None
+        if unificar_escala == 'global': max_in, max_out = max_total, max_total
+        elif unificar_escala == 'hkl': max_in, max_out = max_par, max_par
+        elif unificar_escala == 'fila': max_in, max_out = max_in_global, max_out_global
+        else: max_in, max_out = None, None
         
-        # Fila 1: Entrada
         pf_in.plot(ax=axes[0, i], cmap=cmap, max_val=max_in, direccion_x=direccion_x)
         titulo_base = axes[0, i].get_title()
-        
-        # Fila 2: Salida
         pf_out.plot(ax=axes[1, i], cmap=cmap, max_val=max_out, direccion_x=direccion_x)
         
-        # Aplicamos títulos personalizados o usamos los por defecto
-        if titulos is not None:
-            titulo_base = titulos[i]
+        if titulos is not None: titulo_base = titulos[i]
             
         axes[0, i].set_title(f"Entrada - {titulo_base}", fontsize=14, pad=20)
         axes[1, i].set_title(f"Salida - {titulo_base}", fontsize=14, pad=20)
 
     plt.tight_layout()
+    plt.show()

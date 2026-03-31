@@ -36,19 +36,14 @@ class ODF:
             self.lims = {'phi1': phi1_max, 'Phi': 90, 'phi2': 60}
 
     def __add__(self, other):
-        """ Sobrecarga del operador '+' para sumar texturas """
         if not isinstance(other, ODF):
             raise TypeError(f"No se puede sumar ODF con {type(other)}")
         return ODFMixed([self, other])
 
     def evaluate(self, target_orientations):
-        """Método abstracto para evaluar la densidad en un array de cuaterniones."""
         raise NotImplementedError("Debe implementarse en la subclase.")
 
     def get_density(self, orientaciones, degrees=True):
-        """
-        Calcula la intensidad de la ODF en puntos específicos.
-        """
         if isinstance(orientaciones, (list, np.ndarray)):
             arr = np.array(orientaciones)
             if arr.ndim == 1 and len(arr) == 3:
@@ -68,16 +63,9 @@ class ODF:
         return self.evaluate(rot)
 
     def get_value_at(self, phi1, Phi, phi2, degrees=True):
-        """
-        Devuelve el valor de intensidad (MUD) en una orientación específica.
-        """
         return self.get_density([[phi1, Phi, phi2]], degrees=degrees)[0]
 
     def calc_texture_index(self, res_grados=5.0):
-        """
-        Calcula el Índice de Textura (J-Index) integrando numéricamente 
-        la ODF al cuadrado sobre todo el espacio de Euler válido.
-        """
         print(f" -> Calculando J-Index (Resolución: {res_grados}°)...")
         phi1_max = self.lims['phi1']
         Phi_max = self.lims['Phi']
@@ -101,16 +89,11 @@ class ODF:
         return j_index
 
     def calc_component_volume(self, center_euler, radius_degrees=15.0, res_grados=5.0):
-        """
-        Calcula la fracción de volumen de una componente (integral de la ODF) 
-        dentro de un radio de desorientación dado respecto a un centro.
-        """
         print(f" -> Calculando volumen de componente cerca de {center_euler} (Radio: {radius_degrees}°)...")
         phi1_max = self.lims['phi1']
         Phi_max = self.lims['Phi']
         phi2_max = self.lims['phi2']
         
-        # 1. Armamos la grilla en el espacio de Euler
         x = np.arange(0, phi1_max + res_grados, res_grados)
         y = np.arange(0, Phi_max + res_grados, res_grados)
         z = np.arange(0, phi2_max + res_grados, res_grados)
@@ -118,45 +101,30 @@ class ODF:
         PHI1, PHI, PHI2 = np.meshgrid(x, y, z, indexing='ij')
         eulers = np.stack([PHI1.ravel(), PHI.ravel(), PHI2.ravel()], axis=-1)
         
-        # 2. Convertimos a objetos de orix para medir distancias con simetría
         pg = self.crystal_sym.point_group if hasattr(self.crystal_sym, 'point_group') else self.crystal_sym
         grid_oris = Orientation.from_euler(np.radians(eulers), symmetry=pg)
-        
-        # La orientación central que queremos evaluar
         center_ori = Orientation.from_euler(np.radians([center_euler]), symmetry=pg)
         
-        # 3. Calculamos la desorientación y filtramos los que caen dentro del radio
-        # angle_with() nos da el ángulo mínimo considerando la simetría del cristal
         distancias = grid_oris.angle_with(center_ori)
         mask = distancias <= np.radians(radius_degrees)
         
         if not np.any(mask):
             return 0.0
             
-        # 4. Evaluamos la ODF solo en los puntos que cayeron dentro de la burbuja
         eulers_dentro = eulers[mask]
         f_g = self.get_density(eulers_dentro, degrees=True)
         
-        # 5. Integración numérica (Invariante de volumen sin(Phi))
-        sin_Phi_dentro = np.sin(np.radians(eulers_dentro[:, 1])) # Columna 1 es Phi
+        sin_Phi_dentro = np.sin(np.radians(eulers_dentro[:, 1])) 
         vol_dentro = np.sum(f_g * sin_Phi_dentro)
         
-        # Normalizamos dividiendo por el volumen total de la caja fundamental
         vol_total_zona = np.sum(np.sin(np.radians(PHI.ravel())))
-        
         return vol_dentro / vol_total_zona
     
     def calc_pole_figures(self, lista_hkl, resolution=10):
-        """
-        Calcula y devuelve una lista de objetos PoleFigure.
-        """
         import utils_orient
         return utils_orient.calc_pole_figures(self, lista_hkl, resolution=resolution)
 
     def plot_sections(self, sections=None, axis='phi2', res_grados=2.5, cmap='jet'):
-        """
-        Grafica secciones 2D del espacio de Euler.
-        """
         if sections is None:
             sections = [0, 15, 30, 45, 60]
 
@@ -221,9 +189,7 @@ class ODF:
         fig.colorbar(cp, ax=axes, orientation='vertical', fraction=0.02, pad=0.04)
         plt.show()
 
-# =========================================================================================
-# CLASE ODF COMPONENTE (Maneja Kernels y Fourier)
-# =========================================================================================
+
 # =========================================================================================
 # CLASE ODF COMPONENTE (Maneja Kernels y Fourier)
 # =========================================================================================
@@ -233,7 +199,6 @@ class ODFComponent(ODF):
         self.orientaciones = orientaciones
         self.pesos = np.array(pesos)
         
-        # Flexibilidad: si le pasás un solo kernel, lo multiplica para todas las componentes
         if isinstance(kernels, list):
             self.kernels = kernels
         else:
@@ -243,41 +208,28 @@ class ODFComponent(ODF):
         rot_targets = Rotation(target_orientations.data)
         total_density = np.zeros(rot_targets.size)
         
-        # 1. Calculamos la multiplicidad total por simetría
         pg = self.crystal_sym.point_group if hasattr(self.crystal_sym, 'point_group') else self.crystal_sym
         n_cryst = pg.size
         n_samp = self.sample_sym.size if self.sample_sym is not None else 1
         n_sym_total = n_cryst * n_samp
         
         for i in range(self.orientaciones.size):
-            # Generamos TODAS las variantes cristalinas
             equiv_cryst = pg * self.orientaciones[i]
             
-            # Generamos TODAS las variantes de muestra
             if self.sample_sym:
                 variantes = [ (op * equiv_cryst).data for op in self.sample_sym ]
                 equiv_rot = Rotation(np.vstack(variantes))
             else: 
                 equiv_rot = Rotation(equiv_cryst.data)
                 
-            # 2. Matriz de distancias a TODAS las variantes (shape: n_variantes, n_targets)
             dist_matrix = equiv_rot.angle_with_outer(rot_targets)
-            
-            # 3. Evaluamos el kernel en todas las distancias
             kernel_vals = self.kernels[i].evaluate(dist_matrix, modo='odf')
-            
-            # 4. SUMAMOS todas las colas de las campanas y DIVIDIMOS por la multiplicidad (Simetrización real)
             density_comp = np.sum(kernel_vals, axis=0) / n_sym_total
-            
             total_density += self.pesos[i] * density_comp
             
         return total_density
 
     def calc_fourier_coeffs(self, L_max):
-        """
-        Calcula los coeficientes de Fourier (Triclínico-Triclínico) por fuerza bruta,
-        expandiendo simetrías para evitar desbalances en orientaciones arbitrarias.
-        """
         from utils_fourier import calc_component_fourier
         from orix.quaternion import Rotation
         
@@ -308,11 +260,13 @@ class ODFComponent(ODF):
                 var_ori = variantes_rot[j]
                 coefs_comp = calc_component_fourier(kernel_comp, var_ori, L_max)
                 
-                # coefs_comp es una lista de tuplas (l, m, n, val)
+                # Acá NO multiplicamos por (2L+1) porque ya viene incluido desde utils_fourier.py
                 for l, m, n, c_val in coefs_comp:
                     C_total[(l, m, n)] += peso_variante * c_val
                 
         return C_total
+
+
 # =========================================================================================
 # CLASES DE TEXTURAS IDEALES Y MIXTAS
 # =========================================================================================
@@ -326,12 +280,10 @@ class ODFIsotropic(ODF):
         return np.ones(rot_targets.size) * self.peso
 
     def calc_fourier_coeffs(self, L_max):
-        """ Fourier para textura Isotrópica: Solo existe L=0. """
         C_total = {}
         for l in range(L_max + 1):
             for m in range(-l, l + 1):
                 for n in range(-l, l + 1):
-                    # El armónico l=0, m=0, n=0 lleva todo el peso
                     if l == 0 and m == 0 and n == 0:
                         C_total[(l, m, n)] = self.peso + 0.0j
                     else:
@@ -348,21 +300,16 @@ class ODFFiber(ODF):
         self.peso = peso
         
     def evaluate(self, target_orientations):
-        """ Evalúa la densidad 3D de la fibra en todo el espacio de Euler. """
         rot_targets = Rotation(target_orientations.data)
         pg = self.crystal_sym.point_group if hasattr(self.crystal_sym, 'point_group') else self.crystal_sym
 
-        # 1. Polos hkl simétricos en el marco del cristal
         hkl_sym = pg * self.hkl
         hkl_data = hkl_sym.data.astype(float)
         hkl_data /= np.linalg.norm(hkl_data, axis=1, keepdims=True)
 
-        # 2. Dirección de la fibra en la muestra
         uvw_data = self.uvw.data.reshape(3).astype(float)
         uvw_data /= np.linalg.norm(uvw_data)
 
-        # 3. Rotamos los polos desde el cristal a la muestra 
-        # (orix: ~rot rota vector cristal -> vector muestra)
         polos_muestra = (~rot_targets)[:, np.newaxis] * hkl_sym
         coords = polos_muestra.data.astype(float)
 
@@ -370,44 +317,30 @@ class ODFFiber(ODF):
         normas[normas==0] = 1.0
         coords /= normas
 
-        # 4. Buscamos el ángulo mínimo respecto al eje de la fibra
         dot_prods = np.abs(np.sum(coords * uvw_data, axis=-1))
         angulos = np.arccos(np.clip(dot_prods, 0.0, 1.0))
         min_angulos = np.min(angulos, axis=1)
 
-        # 5. Evaluamos el kernel en modo 'odf'
         return self.kernel.evaluate(min_angulos, modo='odf') * self.peso
 
     def calc_fourier_coeffs(self, L_max):
-        """
-        Calcula los coeficientes de Fourier triclínicos para una Fibra
-        utilizando la solución analítica con Armónicos Esféricos.
-        """
-        # --- PARCHE DE COMPATIBILIDAD PARA SCIPY (VERSIÓN NUEVA VS CLÁSICA) ---
         try:
             from scipy.special import sph_harm_y
             def sph_harm(m, l, azim, polar):
-                # En las nuevas versiones de SciPy (>1.15.0), se llama sph_harm_y 
-                # y cambia el orden de los argumentos a (l, m, polar, azimutal)
                 return sph_harm_y(l, m, polar, azim)
         except ImportError:
             from scipy.special import sph_harm
-            # En la versión clásica la firma es (m, l, azimutal, polar)
-        # ----------------------------------------------------------------------
 
         from utils_fourier import calc_component_fourier
         from orix.quaternion import Rotation
         from orix.vector import Vector3d
         
-        # 1. Obtenemos los q_l (coeficientes 1D del kernel) con el Truco de Identidad
         coefs_origen = calc_component_fourier(self.kernel, Rotation.identity(), L_max)
         
-        # --- CORRECCIÓN: Leer la lista de tuplas (l, m, n, val) ---
         q_l = {l: 0.0 for l in range(L_max + 1)}
         for l, m, n, val in coefs_origen:
             if m == 0 and n == 0:
                 q_l[l] = val.real
-        # ----------------------------------------------------------
         
         C_total = { (l, m, n): 0.0 + 0.0j for l in range(L_max + 1) 
                                           for m in range(-l, l + 1) 
@@ -415,7 +348,6 @@ class ODFFiber(ODF):
                     
         print(f" -> Calculando Fourier (L_max={L_max}) para Fibra (Solución Analítica)...")
         
-        # 2. Expandimos las variantes de simetría (Muestra y Cristal)
         pg = self.crystal_sym.point_group if hasattr(self.crystal_sym, 'point_group') else self.crystal_sym
         hkl_sym = pg * self.hkl
         hkl_data = hkl_sym.data.astype(float)
@@ -432,14 +364,11 @@ class ODFFiber(ODF):
         uvw_variantes /= np.linalg.norm(uvw_variantes, axis=1, keepdims=True)
         peso_variante = self.peso / (hkl_data.shape[0] * uvw_variantes.shape[0])
         
-        # 3. Integración Analítica
         for h_vec in hkl_data:
-            # Ángulos esféricos para h (Cristal): polar (0 a pi), azimutal (-pi a pi)
             polar_h = np.arccos(np.clip(h_vec[2], -1.0, 1.0))
             azim_h = np.arctan2(h_vec[1], h_vec[0])
             
             for y_vec in uvw_variantes:
-                # Ángulos esféricos para y (Muestra)
                 polar_y = np.arccos(np.clip(y_vec[2], -1.0, 1.0))
                 azim_y = np.arctan2(y_vec[1], y_vec[0])
                 
@@ -452,8 +381,8 @@ class ODFFiber(ODF):
                         for n in range(-l, l + 1):
                             Y_y = sph_harm(n, l, azim_y, polar_y)
                             
-                            # Ecuación de convolución de la fibra
-                            val = peso_variante * factor * q * Y_h * np.conj(Y_y)
+                            # Ecuación de convolución de la fibra con el factor de Bunge restaurado
+                            val = peso_variante * factor * q * Y_h * np.conj(Y_y) * (2 * l + 1)
                             C_total[(l, m, n)] += val
                             
         return C_total
@@ -485,30 +414,20 @@ class ODFMixed(ODF):
             raise TypeError(f"No se puede sumar ODFMixed con {type(other)}")
 
     def calc_fourier_coeffs(self, L_max):
-        """
-        Calcula los coeficientes triclínicos de la textura completa
-        sumando linealmente las contribuciones de todas sus partes.
-        """
-        # Inicializamos en 0
         C_sum = { (l, m, n): 0.0 + 0.0j for l in range(L_max + 1) 
                                         for m in range(-l, l + 1) 
                                         for n in range(-l, l + 1) }
         
         print("\n=== INICIANDO EXPANSIÓN DE FOURIER GLOBAL ===")
         for comp in self.componentes:
-            # Polimorfismo: Cada clase (Component, Fiber, Isotropic) sabe cómo calcularse
             c_parcial = comp.calc_fourier_coeffs(L_max)
-            
-            # Sumamos al acumulador global
             for key in C_sum.keys():
                 C_sum[key] += c_parcial[key]
                 
         print("=== EXPANSIÓN COMPLETADA ===\n")
         return C_sum
 
-# =========================================================================================
-# CLASE ODF DISCRETA (KD-Tree Rápido)
-# =========================================================================================
+
 # =========================================================================================
 # CLASE ODF DISCRETA (KD-Tree Rápido con Interpolación Suave)
 # =========================================================================================
@@ -546,24 +465,90 @@ class ODFDiscreta(ODF):
         self.tree = cKDTree(q_data_full)
         
     def evaluate(self, target_orientations):
-        """ Evalúa la densidad ODF con interpolación Gaussiana de los vecinos """
         q_targets = target_orientations.data
-        
-        # En vez de 1 solo vecino (que genera hexágonos duros), usamos 5 para fundir
         dist, idx = self.tree.query(q_targets, k=5)
-        
-        # Evitamos división por cero si cae exactamente encima de un nodo
         dist = np.maximum(dist, 1e-6)
         
-        # Usamos una campana de Gauss sobre la distancia para un suavizado estético
-        # sigma = 0.1 es aprox 6-8 grados de fundido, ideal para borrar la grilla
         sigma = 0.10
         pesos_vecinos = np.exp(-0.5 * (dist / sigma)**2)
         
-        # Normalizamos los pesos gaussianos
         suma_pesos = np.sum(pesos_vecinos, axis=1, keepdims=True)
         pesos_vecinos /= suma_pesos
         
-        # Extraemos los valores y hacemos la media ponderada
         valores_vecinos = self.pesos_full[idx]
         return np.sum(valores_vecinos * pesos_vecinos, axis=1)
+    
+    def calc_fourier_coeffs(self, L_max):
+        from utils_fourier import calc_component_fourier
+        from utils_kernels import OrientationKernel
+        from orix.quaternion import Rotation
+        import time
+        import sys
+        
+        kernel_delta = OrientationKernel(tipo='gaussian', fwhm_grados=1.0)
+        coefs_origen = calc_component_fourier(kernel_delta, Rotation.identity(), L_max)
+        
+        q_l = {}
+        for l, m, n, val in coefs_origen:
+            if m == 0 and n == 0:
+                q_l[l] = val.real
+                if abs(q_l[l]) < 1e-10: q_l[l] = 1.0 
+                
+        C_total = { (l, m, n): 0.0 + 0.0j for l in range(L_max + 1) 
+                                          for m in range(-l, l + 1) 
+                                          for n in range(-l, l + 1) }
+                                          
+        pg = self.crystal_sym.point_group if hasattr(self.crystal_sym, 'point_group') else self.crystal_sym
+        
+        print(f"\n -> Integrando Fourier (L_max={L_max}) sobre {self.orientaciones.size} nodos WIMV...")
+        print(f" -> Optimizando: Omitiendo vóxeles vacíos para acelerar el cálculo.")
+        
+        t_inicio = time.time()
+        total_nodos = self.orientaciones.size
+        
+        for i in range(total_nodos):
+            peso_odf = self.pesos[i]
+            if peso_odf < 1e-4:
+                continue
+                
+            vol_nodo = peso_odf / total_nodos
+            equiv_cryst = pg * self.orientaciones[i]
+            
+            if self.sample_sym:
+                variantes = [ (op * equiv_cryst).data for op in self.sample_sym ]
+                variantes_rot = Rotation(np.vstack(variantes))
+            else: 
+                variantes_rot = Rotation(equiv_cryst.data)
+                
+            vol_variante = vol_nodo / variantes_rot.size
+            
+            for j in range(variantes_rot.size):
+                var_ori = variantes_rot[j]
+                coefs_triclinicos = calc_component_fourier(kernel_delta, var_ori, L_max)
+                
+                for l, m, n, c_val in coefs_triclinicos:
+                    # Sumamos el T_lmn puro y aplicamos el factor de Bunge (2L + 1) para evitar que se anule
+                    C_total[(l, m, n)] += vol_variante * (c_val / q_l[l]) * (2 * l + 1)
+                    
+            if i % 100 == 0 or i == total_nodos - 1:
+                progreso = (i + 1) / total_nodos * 100
+                sys.stdout.write(f"\r    [Progreso: {progreso:5.1f}%]")
+                sys.stdout.flush()
+                
+        print(f"\n -> Integración completada en {time.time() - t_inicio:.1f} segundos.")
+        return C_total
+    
+# =========================================================================================
+# CLASE ODF FOURIER (Evalúa la serie armónica directamente de forma analítica)
+# =========================================================================================
+class ODFFourier(ODF):
+    def __init__(self, coefs, crystal_sym, sample_sym=None, lims=None):
+        super().__init__(crystal_sym, sample_sym, lims=lims)
+        self.coefs = coefs
+
+    def evaluate(self, target_orientations):
+        from utils_fourier import eval_odf_from_fourier
+        # Evaluamos la matemática pura de Fourier en los puntos exactos pedidos
+        mud = eval_odf_from_fourier(self.coefs, target_orientations)
+        # Filtramos las oscilaciones numéricas (Gibbs)
+        return np.maximum(mud, 0.0)

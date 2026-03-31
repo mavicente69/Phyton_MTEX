@@ -7,6 +7,7 @@ Soporta construcción analítica directa desde coeficientes de Fourier.
 """
 import numpy as np
 import matplotlib.pyplot as plt
+import time
 from orix.vector import Vector3d
 from orix.quaternion import Rotation, Orientation
 from utils_vector3d import proyectar_igual_area
@@ -45,31 +46,44 @@ class PoleFigure:
     def from_fourier(cls, coefs, hkl_miller, crystal_sym, resolution=2.5):
         """
         Genera una Figura de Polos evaluando analíticamente los coeficientes 
-        de Fourier (C_lmn) sobre una grilla esférica (Hemisferio Norte).
+        de Fourier (C_lmn) sobre la grilla hexagonal "Panel de Abejas".
         Aplica la Ley de Friedel (solo armónicos pares).
+        Optimizado con Fast-Cache de armónicos esféricos.
         """
-        import time
         t0 = time.time()
         
         # Obtenemos la etiqueta visual del plano (ej: "0001" o "10-10")
         hkl_vals = hkl_miller.hkil.flatten() if hasattr(hkl_miller, 'hkil') else hkl_miller.hkl.flatten()
         label_plano = ''.join([str(int(x)) for x in hkl_vals])
-        print(f" -> Construyendo Figura de Polos {{{label_plano}}} desde Fourier...")
+        print(f" -> Construyendo Figura de Polos {{{label_plano}}} desde Fourier (Fast-Cache)...")
         
-        # 1. Crear Grilla Esférica de la Muestra (Solo Hemisferio Norte, Z >= 0)
-        azi = np.radians(np.arange(0, 360, resolution))
-        pol = np.radians(np.arange(0, 90 + resolution, resolution))
-        AZI, POL = np.meshgrid(azi, pol)
+        # 1. Crear Grilla TIPO PANEL DE ABEJAS (Hexagonal)
+        paso = resolution / 90.0  # Adaptación de grados a escala [0, 1] de Igual Área
+        puntos_2d = []
+        n_max = int(np.ceil(2.0 / paso))
         
-        X_sph = np.sin(POL) * np.cos(AZI)
-        Y_sph = np.sin(POL) * np.sin(AZI)
-        Z_sph = np.cos(POL)
+        for i in range(-n_max, n_max + 1):
+            for j in range(-n_max, n_max + 1):
+                x = i * paso + j * (paso / 2.0)
+                y = j * (paso * np.sqrt(3) / 2.0)
+                if x**2 + y**2 <= 1.0 + 1e-6:
+                    puntos_2d.append([x, y])
+                    
+        puntos_2d = np.array(puntos_2d)
         
-        polar_y = POL.ravel()
-        azim_y = AZI.ravel()
+        # Proyección Inversa de Igual Área a Coordenadas Esféricas
+        R = np.clip(np.linalg.norm(puntos_2d, axis=1), 0.0, 1.0)
+        theta = 2.0 * np.arcsin(R / np.sqrt(2.0))
+        phi = np.arctan2(puntos_2d[:, 1], puntos_2d[:, 0])
         
-        # Empaquetamos las direcciones de la grilla en un Vector3d de orix
-        direcciones_muestra = Vector3d(np.column_stack((X_sph.ravel(), Y_sph.ravel(), Z_sph.ravel())))
+        X_sph = np.sin(theta) * np.cos(phi)
+        Y_sph = np.sin(theta) * np.sin(phi)
+        Z_sph = np.cos(theta)
+        
+        polar_y = theta
+        azim_y = np.mod(phi, 2 * np.pi)
+        
+        direcciones_muestra = Vector3d(np.column_stack((X_sph, Y_sph, Z_sph)))
 
         # 2. Obtener polos cristalográficos simetrizados en coordenadas cartesianas (Vector3d)
         pg = crystal_sym.point_group if hasattr(crystal_sym, 'point_group') else crystal_sym
@@ -86,33 +100,54 @@ class PoleFigure:
         intensities = np.zeros(len(polar_y), dtype=complex)
         L_max = max([key[0] for key in coefs.keys()])
         
+        # ====================================================================
+        # EXTREME OPTIMIZATION: CACHÉ DE ARMÓNICOS DE LA MUESTRA
+        # Precalculamos Y_y (que evalúa todo el array 2D) una sola vez por cada (l, n)
+        # ====================================================================
+        Y_y_cache = {}
+        for l in range(0, L_max + 1, 2):
+            for n in range(-l, l + 1):
+                # Solo precalculamos si sabemos que hay coeficientes útiles para esta fila
+                if any(abs(coefs.get((l, m, n), 0.0j)) > 1e-8 for m in range(-l, l + 1)):
+                    Y_y_cache[(l, n)] = sph_harm(n, l, azim_y, polar_y)
+        
+        # Bucle de sumatoria principal
         for h_vec in polos_simetricos:
             hx, hy, hz = h_vec
             polar_h = np.arccos(np.clip(hz, -1.0, 1.0))
             azim_h = np.arctan2(hy, hx)
 
-            for l in range(0, L_max + 1, 2):  # Solo pares
+            for l in range(0, L_max + 1, 2):
                 factor = (4.0 * np.pi) / (2 * l + 1)
                 for m in range(-l, l + 1):
+                    # Y_h es un escalar simple, rapidísimo de calcular
+                    Y_h = sph_harm(m, l, azim_h, polar_h)
+                    
+                    if abs(Y_h) < 1e-12: 
+                        continue # Si el polo es nulo, saltamos todo el bucle N
+                        
+                    conj_Y_h_factor = factor * np.conj(Y_h) / num_h
+
                     for n in range(-l, l + 1):
                         C_lmn = coefs.get((l, m, n), 0.0j)
-                        if abs(C_lmn) > 1e-8:
-                            # sph_harm mapeado correctamente gracias al bloque try/except
-                            Y_h = sph_harm(m, l, azim_h, polar_h)
-                            Y_y = sph_harm(n, l, azim_y, polar_y)
-                            
-                            intensities += C_lmn * factor * np.conj(Y_h) * Y_y / num_h
+                        if abs(C_lmn) > 1e-8 and (l, n) in Y_y_cache:
+                            # Aca adentro ya NO llamamos a sph_harm, solo sumamos arrays
+                            intensities += C_lmn * conj_Y_h_factor * Y_y_cache[(l, n)]
 
         # 4. Limpiamos ruido numérico (Gibbs) garantizando intensidad positiva
         intensidades_finales = np.maximum(np.real(intensities), 0.0)
         
-        print(f"    [Completado en {time.time() - t0:.2f} s - Máximo MUD: {np.max(intensidades_finales):.2f}]")
+        print(f"    [Calculados {len(puntos_2d)} nodos en {time.time() - t0:.3f} s - Máximo MUD: {np.max(intensidades_finales):.2f}]")
 
         # 5. Instanciamos y retornamos el objeto PoleFigure
-        return cls(direcciones=direcciones_muestra, 
-                   intensidades=intensidades_finales, 
-                   hkl=hkl_miller)
-
+        pf_obj = cls(direcciones=direcciones_muestra, 
+                     intensidades=intensidades_finales, 
+                     hkl=hkl_miller)
+                     
+        # Guardamos la grilla 2D plana para consistencia visual y rotaciones futuras
+        pf_obj.puntos_2d = puntos_2d
+        
+        return pf_obj
 
     def rotate(self, rotacion):
         """
@@ -133,9 +168,15 @@ class PoleFigure:
         coords_upper = np.where(coords[:, 2:3] < 0, -coords, coords)
         nuevas_direcciones = Vector3d(coords_upper)
         
-        return PoleFigure(direcciones=nuevas_direcciones, 
-                          intensidades=self.intensidades, 
-                          hkl=self.hkl)
+        pf_rotada = PoleFigure(direcciones=nuevas_direcciones, 
+                               intensidades=self.intensidades, 
+                               hkl=self.hkl)
+        
+        # Propagamos la información de la grilla 2D si existía
+        if hasattr(self, 'puntos_2d'):
+            pf_rotada.puntos_2d = self.puntos_2d
+            
+        return pf_rotada
 
     def plot(self, ax=None, cmap='jet', niveles=25, max_val=None, direccion_x='horizontal'):
         """
@@ -211,7 +252,6 @@ def plot_pfs(lista_pfs, titulos=None, cmap='jet', max_val_global=False, direccio
 
     plt.tight_layout()
     plt.show()
-
 
 def plot_pf_comparison(pfs_in, pfs_out, titulos=None, suptitle="Comparativa de Figuras de Polos", cmap='jet', unificar_escala='hkl', direccion_x='horizontal'):
     n = len(pfs_in)

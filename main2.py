@@ -1,19 +1,5 @@
 # -*- coding: utf-8 -*-
 """
-Created on Fri Mar  6 11:13:15 2026
-
-@author: mavic
-"""
-
-# -*- coding: utf-8 -*-
-"""
-Created on Fri Mar  6 11:13:15 2026
-
-@author: mavic
-"""
-
-# -*- coding: utf-8 -*-
-"""
 Script Principal: Simulación de Texturas Complejas (Aditivas).
 Componentes: Isotrópica (Azar) + Ideales (Laminación) + Fibras.
 Entorno: texturaPy3.10 [2026-03-06]
@@ -31,6 +17,7 @@ import utils_sym
 import utils_kernels
 import utils_orient
 from utils_odf import ODFIsotropic, ODFComponent, ODFFiber
+from utils_pf import plot_pfs  # Importamos la función de ploteo múltiple
 
 def main():
     # 1. CONFIGURACIÓN DE FASE Y SIMETRÍAS
@@ -49,36 +36,32 @@ def main():
     print("--- Construyendo Textura Mixta ---")
     
     # A. Componente Isotrópica (Fondo de Azar - 20%)
-    # Esto asegura que la intensidad mínima en toda la ODF sea 0.2 MUD
     odf_azar = ODFIsotropic(peso=0.2, crystal_sym=cryst_sym, sample_sym=samp_sym)
 
     # B. Componentes Ideales (Laminación - 50%)
-    # Definimos la componente Basal [0, 0, 0]
     ori_basal = Orientation(Rotation.from_euler(np.deg2rad([0, 0, 0])))
     odf_laminacion = ODFComponent(ori_basal, pesos=[0.1], kernels=k_comp, 
                                   crystal_sym=cryst_sym, sample_sym=samp_sym)
 
-    # C. Textura de Fibra (Deformación - 30%)
-    # Ejemplo: Eje c [0001] paralelo a la dirección normal ND [0, 0, 1]
+    # C. Textura de Fibra 1 (Deformación - 30%)
     eje_c = Miller(hkil=[0, 0, 0, 1], phase=fase_hcp)
     nd = Vector3d([0, 0, 1])
-    odf_fibra = ODFFiber(eje_c, nd, peso=0.4, kernel=k_fibra, 
+    odf_fibra = ODFFiber(eje_c, nd, peso=0.3, kernel=k_fibra, 
                          crystal_sym=cryst_sym, sample_sym=samp_sym)
-    # 3. Fibra 2: Eje prismático paralelo a RD (50%)
+                         
+    # D. Textura de Fibra 2 (Eje prismático paralelo a RD)
     eje_pris = Miller(hkil=[1, 0, -1, 0], phase=fase_hcp)
     rd = Vector3d([1, 0, 0])
     odf_fibra_pris = ODFFiber(eje_pris, rd, peso=0.4, kernel=k_fibra, 
-                      crystal_sym=cryst_sym, sample_sym=samp_sym)
+                              crystal_sym=cryst_sym, sample_sym=samp_sym)
 
-    # D. SUMA TOTAL (Arquitectura Aditiva)
-    # La suma de pesos (0.2 + 0.5 + 0.3) es 1.0 para mantener la normalización
+    # E. SUMA TOTAL (Arquitectura Aditiva)
     odf_total = odf_azar + odf_laminacion + odf_fibra + odf_fibra_pris
 
     # 4. ANÁLISIS CUANTITATIVO
     print("\n--- Resultados del Análisis Mixto ---")
     j_index = odf_total.calc_texture_index(res_grados=5)
     val_basal = odf_total.get_value_at(0, 0, 0)
-    # Calculamos el volumen de la componente basal "pura" (excluyendo azar y fibra lejana)
     vol_basal = odf_total.calc_component_volume(center_euler=[0,0,0], radius_degrees=15)
 
     print("="*45)
@@ -87,72 +70,43 @@ def main():
     print(f"3. Vol. en esfera basal:     {vol_basal*100:.1f} %")
     print("="*45)
 
-# 5. VISUALIZACIÓN
+    # 5. VISUALIZACIÓN ODF y PFs
     print("\n--- Generando Gráficos Finales ---")
-    # Secciones de Euler
-    odf_total.plot_sections(sections=[0, 30, 60], axis='phi2',res_grados=5)
+    odf_total.plot_sections(sections=[0, 30, 60], axis='phi2', res_grados=5)
 
-    # Figuras de Polos (0001) y (10-10)
     planos = [
         Miller(hkil=[0, 0, 0, 1], phase=fase_hcp),
         Miller(hkil=[1, 0, -1, 0], phase=fase_hcp)
     ]
     
-    # 1. Calculamos las figuras de polos
-    mis_pfs = odf_total.calc_pole_figures(planos, resolution=120)
-    
-    # --- LA MAGIA DE UNIRLAS EN UNA SOLA FIGURA ---
-    # Creamos un "lienzo" con 1 fila y tantas columnas como PFs tengamos
-    n_pfs = len(mis_pfs)
-    fig, axes = plt.subplots(1, n_pfs, figsize=(6 * n_pfs, 6))
-    
-    # Si por casualidad calculamos solo 1 plano, lo convertimos en lista para que el loop no falle
-    if n_pfs == 1:
-        axes = [axes]
-        
-    # Le pasamos a cada Figura de Polos el recuadro (ax) donde tiene que dibujarse
-    for i, pf in enumerate(mis_pfs):
-        pf.plot(ax=axes[i], direccion_x='vertical')
-
-    plt.tight_layout()
-    plt.show()
-
-# ... (código anterior de la sección 5 de visualización de PFs)
-    for pf in mis_pfs:
-        pf.plot(ax=axes[i])
-    plt.tight_layout()
+    print("\n--- Renderizando Figuras de Polos ---")
+    mis_pfs = odf_total.calc_pole_figures(planos, res_grados=5)
+    plot_pfs(mis_pfs, titulos=["PF (0001)", "PF (10-10)"], direccion_x='vertical')
 
     # ==========================================================
     # 6. PERFIL LINEAL DE LA ODF (1D)
     # ==========================================================
     print("\n--- Extrayendo Perfil Lineal de la ODF ---")
-    
-    # 1. Definimos el rango de phi1 (usamos el límite dinámico de la ODF)
     limite_phi1 = odf_total.lims['phi1']
-    phi1_vals = np.linspace(0, limite_phi1, 200) # 200 puntos para que la curva sea suave
+    phi1_vals = np.linspace(0, limite_phi1, 200) 
     
-    # 2. Fijamos los otros dos ángulos
     Phi_fijo = 60
     phi2_fijo = 0
     
-     # 3. Armamos la matriz (N, 3) con los ángulos de Euler
     eulers_linea = np.column_stack((
         phi1_vals, 
         np.full_like(phi1_vals, Phi_fijo), 
         np.full_like(phi1_vals, phi2_fijo)
     ))
     
-    # 4. Calculamos las intensidades al instante con tu nueva función
     densidades_linea = odf_total.get_density(eulers_linea, degrees=True)
     
-    # 5. Graficamos el resultado
     fig_perfil, ax_perfil = plt.subplots(figsize=(8, 4))
-    
     ax_perfil.plot(phi1_vals, densidades_linea, 'b-', linewidth=2, 
                    label=f'$\Phi={Phi_fijo}^\circ, \phi_2={phi2_fijo}^\circ$')
     
     ax_perfil.set_xlim(0, limite_phi1)
-    ax_perfil.set_ylim(bottom=0) # La intensidad ODF nunca es negativa
+    ax_perfil.set_ylim(bottom=0) 
     
     ax_perfil.set_xlabel('$\phi_1$ (grados)', fontsize=12)
     ax_perfil.set_ylabel('Intensidad (MUD)', fontsize=12)
@@ -162,15 +116,24 @@ def main():
     ax_perfil.legend()
     fig_perfil.tight_layout()
 
-     # Mostrar todos los gráficos juntos
     plt.show()
     
-    
-     # TEST FOURIER
+    # ==========================================================
+    # 7. TEST FOURIER (Matriz Vectorizada)
+    # ==========================================================
     print("\n--- TEST DE FOURIER ---")
     coefs = odf_total.calc_fourier_coeffs(L_max=4)
     print(f"Total de armónicos calculados: {len(coefs)}")
-    print(f"C(0,0,0) (Integral total) = {coefs[(0,0,0)]:.4f}")
+    
+    # Buscamos la fila donde L=0, m=0, n=0 en la matriz (N, 6)
+    mask_000 = (coefs[:, 0] == 0) & (coefs[:, 1] == 0) & (coefs[:, 2] == 0)
+    
+    if np.any(mask_000):
+        # La columna 3 tiene la parte Real
+        c000_val = coefs[mask_000][0, 3] 
+        print(f"C(0,0,0) (Integral total) = {c000_val:.4f}")
+    else:
+        print("C(0,0,0) (Integral total) no encontrado o anulado.")
 
 if __name__ == "__main__":
     main()

@@ -13,9 +13,9 @@ from orix.quaternion import Rotation, Orientation
 from orix.quaternion.symmetry import D2h, C1
 
 from utils_wimv import reconstruir_odf_wimv
-# ¡IMPORTAMOS TU FUNCIÓN GLOBAL ACÁ!
 from utils_pf import PoleFigure, plot_pf_comparison 
-from utils_odf import ODFDiscreta
+# ✅ Importamos ODFFourier (Simetrizada) y ODFBunge (Reducida)
+from utils_odf import ODFDiscreta, ODFFourier, ODFBunge
 
 def main():
     print("--- Configurando Fase: Zirconio (HCP) ---")
@@ -84,8 +84,8 @@ def main():
         lista_pfs_exp=mis_pfs_corregidas, 
         fase_cristal=fase_zr,
         simetria_muestra=ss, 
-        resolucion_grados=5.0,  # Resolución ajustada a 5 grados para evitar aplastar picos
-        iteraciones=25          # Más iteraciones para subir la aguja
+        resolucion_grados=5.0,  
+        iteraciones=25          
     )
     
     print("\n--- Instanciando clase ODFDiscreta ---")
@@ -109,29 +109,24 @@ def main():
     plt.pause(0.1)
     
     # =========================================================
-    # RECALCULAR Y COMPARAR PFs USANDO TU FUNCIÓN NATIVA
+    # RECALCULAR Y COMPARAR PFs (VÍA INTEGRACIÓN NUMÉRICA)
     # =========================================================
-    print("\n--- Generando Comparativa EXP (Escalada) vs CALC ---")
+    print("\n--- Generando Comparativa EXP vs CALC (Numérica) ---")
     planos_medidos = [pf.hkl for pf in mis_pfs_corregidas]
     
-    # Recalculamos con buena resolución para evitar bordes blancos
-    pfs_recalculadas = mi_odf.calc_pole_figures(lista_hkl=planos_medidos, resolution=20)
-
-    # Armamos unos títulos limpios para la función comparativa
+    pfs_recalculadas = mi_odf.calc_pole_figures(lista_hkl=planos_medidos, res_grados=5)
     nombres_planos = [f"Plano {{{''.join([str(int(x)) for x in pf.hkl.hkil.flatten()])}}}" for pf in mis_pfs_corregidas]
 
-    # Llamamos a tu función, que automáticamente gestiona los pares "Entrada/Salida" y unifica la escala por hkl
     plot_pf_comparison(
         pfs_in=mis_pfs_corregidas,
         pfs_out=pfs_recalculadas,
         titulos=nombres_planos,
-        suptitle="Comparativa de Figuras de Polos (WIMV)",
+        suptitle="Comparativa de PFs: Experimental vs Integración Numérica (WIMV)",
         unificar_escala='hkl',
         direccion_x='vertical'
     )
-    
-    # Este plt.show final frena el script para que veas todas las ventanas
-    plt.show() 
+    plt.show(block=False)
+    plt.pause(0.1)
 
     # =========================================================
     # CUANTIFICACIÓN AUTOMÁTICA DE LA TEXTURA (ZIRCALOY)
@@ -140,64 +135,59 @@ def main():
     print("📈 REPORTE CUANTITATIVO DE LA TEXTURA (MÉTODO WIMV)")
     print("=========================================================")
     
-    # 1. J-Index (Severidad Global de la Textura)
-    # Un material isotrópico tiene J=1. Texturas de laminación fuertes suelen dar J=4 a 15+
     j_index = mi_odf.calc_texture_index(res_grados=5.0)
     print(f" -> J-Index (Fuerza global de la textura) : {j_index:.2f}")
     
-    # 2. Fracciones de Volumen de Componentes Claves
     print("\n -> Fracciones de Volumen (Radio de integración esférica: ±15.0°):")
     radio_busqueda = 15.0
     
-    # A. Fibra Basal Inclinada (Típica de deformación por laminación, ~30° hacia la dirección transversal)
     centro_basal_inclinado = [0, 30, 0]
-    vol_basal_inc = mi_odf.calc_component_volume(
-        center_euler=centro_basal_inclinado, radius_degrees=radio_busqueda, res_grados=5.0
-    )
+    vol_basal_inc = mi_odf.calc_component_volume(center_euler=centro_basal_inclinado, radius_degrees=radio_busqueda, res_grados=5.0)
     print(f"    * Fibra Basal Inclinada {centro_basal_inclinado} : {vol_basal_inc * 100:>6.2f} %")
     
-    # B. Polo Basal Normal (Eje C apuntando exactamente al plano de la normal, ND)
-    # En chapas muy deformadas en frío, este número suele ser bajísimo.
     centro_basal_normal = [0, 0, 0]
-    vol_basal_norm = mi_odf.calc_component_volume(
-        center_euler=centro_basal_normal, radius_degrees=radio_busqueda, res_grados=5.0
-    )
+    vol_basal_norm = mi_odf.calc_component_volume(center_euler=centro_basal_normal, radius_degrees=radio_busqueda, res_grados=5.0)
     print(f"    * Polo Basal Normal     {centro_basal_normal} : {vol_basal_norm * 100:>6.2f} %")
     
-    # C. Fibra Prismática (Ejes C acostados en el plano de la chapa, Phi=90°)
     centro_prismatica = [0, 90, 30] 
-    vol_prism = mi_odf.calc_component_volume(
-        center_euler=centro_prismatica, radius_degrees=radio_busqueda, res_grados=5.0
-    )
+    vol_prism = mi_odf.calc_component_volume(center_euler=centro_prismatica, radius_degrees=radio_busqueda, res_grados=5.0)
     print(f"    * Fibra Prismática      {centro_prismatica} : {vol_prism * 100:>6.2f} %")
     
     print("=========================================================\n")
 
     # =========================================================
-    # EXTRACCIÓN DE COEFICIENTES DE FOURIER (CROSS-CHECK MTEX)
+    # EXTRACCIÓN Y COMPARACIÓN VÍA FOURIER: SIMETRIZADA VS BUNGE
     # =========================================================
     print("\n=========================================================")
-    print("🌀 COEFICIENTES DE FOURIER (Triclínico-Triclínico)")
+    print("🌀 VALIDACIÓN DE BASES: SIMETRIZADA VS IRREDUCIBLE DE BUNGE")
     print("=========================================================")
-    L_MAX = 4  # Nivel de corte para la comparación
+    L_MAX = 20  
     
-    coefs_fourier = mi_odf.calc_fourier_coeffs(L_MAX)
-    
-    print(f"\n L |  m |  n |      Real      |    Imaginario  ")
-    print("-----------------------------------------------")
-    
-    # En materiales típicos, los L impares suelen ser cero por la simetría de inversión.
-    # Filtramos valores muy chicos (polvo numérico) para tener una tabla limpia.
-    for l in range(0, L_MAX + 1, 2):  
-        for m in range(-l, l + 1):
-            for n in range(-l, l + 1):
-                val = coefs_fourier.get((l, m, n), 0.0j)
-                
-                if abs(val) > 1e-4:
-                    print(f"{l:2d} | {m:2d} | {n:2d} | {val.real:12.6f} | {val.imag:12.6f}")
-                    
-    print("=========================================================\n")
+    # 1. Base Simetrizada clásica (m, n)
+    coefs_sym_mn = mi_odf.calc_fourier_coeffs(L_MAX)
+    mi_odf_sym = ODFFourier(coefs_array=coefs_sym_mn, crystal_sym=fase_zr.point_group, sample_sym=ss)
 
+    # 2. Base irreducible de Bunge (Mu, Nu)
+    coefs_bunge = mi_odf.calc_bunge_coeffs(L_MAX)
+    mi_odf_bunge = ODFBunge(C_bunge=coefs_bunge, crystal_sym=fase_zr.point_group, sample_sym=ss)
+
+    # 3. Generar PFs desde ambas bases
+    print("\n--- Generando PFs Analíticas para comparación cruzada ---")
+    pfs_fourier_sym = mi_odf_sym.calc_pole_figures(lista_hkl=planos_medidos, res_grados=5.0)
+    pfs_fourier_bunge = mi_odf_bunge.calc_pole_figures(lista_hkl=planos_medidos, res_grados=5.0)
+
+    # Gráfico Comparativo Final: Simetrizada (Arriba) vs Bunge (Abajo)
+    plot_pf_comparison(
+        pfs_in=pfs_fourier_sym,
+        pfs_out=pfs_fourier_bunge,
+        titulos=nombres_planos,
+        suptitle=f"Comparativa Analítica: Simetrizada (Arriba) vs Bunge Irreducible (Abajo) (L_max={L_MAX})",
+        unificar_escala='hkl',
+        direccion_x='vertical'
+    )
+
+    print("\n✅ PROCESO COMPLETADO.")
+    plt.show()
 
 if __name__ == "__main__":
     main()

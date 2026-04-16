@@ -80,7 +80,6 @@ def _calc_component_coefs_numba(L_max, K_l, alpha, beta, gamma):
     return out[:idx]
 
 def calc_component_fourier(kernel, orientacion, L_max):
-    """Calcula coeficientes para una componente continua a velocidad nativa."""
     tabla_kernel = kernel.calc_fourier_coeffs(L_max, return_full=False)
     K_l = np.zeros(L_max + 1)
     for fila in tabla_kernel:
@@ -136,6 +135,7 @@ def calc_discrete_fourier(orientaciones, pesos, L_max):
     pesos_arr = np.asarray(pesos, dtype=np.float64)
     if np.sum(pesos_arr) > 0: pesos_arr /= np.sum(pesos_arr)
         
+    # Hemos removido el shift experimental de aquí. La matemática base se mantiene pura.
     return _calc_discrete_coefs_numba(L_max, alpha, beta, gamma, pesos_arr)
 
 @njit(cache=True)
@@ -151,7 +151,6 @@ def _build_Tl_matrix_numba(l, alpha, beta, gamma):
     return T
 
 def build_Tl_matrix(l, orientaciones):
-    """Construye las matrices T para proyecciones o evaluación (Numba-Speed)."""
     euler = orientaciones.to_euler().reshape(-1, 3)
     alpha = euler[:, 0] - (np.pi / 2.0)
     beta  = euler[:, 1]
@@ -304,7 +303,6 @@ def eval_odf_from_bunge(C_bunge, orientaciones, A_cryst, B_samp):
 # =========================================================================================
 
 def eval_sph_harm(m, l, polar, azimuthal):
-    """Encapsulamiento del armónico esférico base."""
     try:
         from scipy.special import sph_harm_y
         return sph_harm_y(l, m, polar, azimuthal)
@@ -313,7 +311,6 @@ def eval_sph_harm(m, l, polar, azimuthal):
         return sph_harm(m, l, azimuthal, polar)
 
 def eval_sym_sph_harm(l, polar, azimuthal, proj_matrix, is_sample=False):
-    """Construye las Funciones Armónicas Esféricas Simetrizadas (\dot{Y}_l^\mu)."""
     polar, azimuthal = np.atleast_1d(polar), np.atleast_1d(azimuthal)
     Y_raw = np.zeros((2 * l + 1, len(polar)), dtype=complex)
     for m in range(-l, l + 1):

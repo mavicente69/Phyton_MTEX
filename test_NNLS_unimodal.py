@@ -97,20 +97,20 @@ def main():
         ori_central = Orientation.from_euler(np.radians([ori_central_grados]), symmetry=cs)
         odf_unimodal = ODFComponent(
             orientaciones=ori_central,
-            pesos=[0.01],  # Directamente le asignamos el 70%
+            pesos=[0.1],  # Directamente le asignamos el 70%
             kernels=OrientationKernel(fwhm_grados=15.0, tipo='gaussian'), 
             crystal_sym=cs,
             sample_sym=ss
         )
         
         # 2. Componente Isotrópica usando TU clase (Fondo - 30% de la masa)
-        odf_iso = ODFIsotropic(crystal_sym=cs, sample_sym=ss, peso=0.99)
+        odf_iso = ODFIsotropic(crystal_sym=cs, sample_sym=ss, peso=0.9)
         
         # 3. MAGIA OOP: Tu método __add__ crea automáticamente una ODFMixed
         odf_mezcla = odf_unimodal + odf_iso
         
         # 4. Calculamos las PFs directamente desde el objeto mixto
-        pfs_perfectas_mezcladas = odf_mezcla.calc_pole_figures(lista_hkl=lista_planos, res_grados=30)
+        pfs_perfectas_mezcladas = odf_mezcla.calc_pole_figures(lista_hkl=lista_planos, res_grados=5)
 
         # 5. SABOTAJE: Inyectamos factores de escala arbitrarios a la mezcla
         print("--- Saboteando escalas MUD de las PFs sintéticas mezcladas ---")
@@ -142,7 +142,10 @@ def main():
         print("--- Cargando y procesando datos ASCII experimentales ---")
         
         if MATERIAL == "zirconio":
-            directorio_base = r"C:\Users\mavic\MiguelAngel\KOWARI-HIDRUROS\Viaje a ANSTO\Muestras textura Chapa Zircaloy4\Texturas\Zr_tex_prisms\N0"
+            directorio_base = r"C:\Users\mavic\MiguelAngel\Texture Phyton\Exp_Data\Zr\N0"
+            directorio_base = r"C:\Users\mavic\MiguelAngel\Texture Phyton\Exp_Data\Zr\N1"
+            directorio_base = r"C:\Users\mavic\MiguelAngel\Texture Phyton\Exp_Data\Zr\N2"
+            
             archivos_exp = [
                 {"file": "d1_part1_p1_Zr(100).txt", "hkil": [1, 0, -1, 0]},
                 {"file": "d1_part2_p1_Zr(002).txt", "hkil": [0, 0, 0, 2]},
@@ -207,8 +210,10 @@ def main():
         fase_cristal=fase_cristal, 
         simetria_muestra=ss,
         tipo_kernel='gaussian',
-        resolucion_grados=10 
-    )
+        resolucion_grados=5,
+        tol_error=1e-4,
+        max_iter=10
+           )
 
     # ====================================================================
     # 4. RECALCULAR Y COMPARAR PFs

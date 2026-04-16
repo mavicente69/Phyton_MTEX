@@ -15,7 +15,8 @@ from utils_odf import ODFComponent, ODFIsotropic
 from utils_kernels import OrientationKernel
 from utils_so3 import SO3Grid
 
-def reconstruir_odf_nnls(lista_pfs_exp, fase_cristal, simetria_muestra=None, tipo_kernel='gaussian', resolucion_grados=None):
+# ✅ Agregamos tol_error y max_iter a los argumentos
+def reconstruir_odf_nnls(lista_pfs_exp, fase_cristal, simetria_muestra=None, tipo_kernel='gaussian', resolucion_grados=None, tol_error=1e-3, max_iter=10):
     print(f"\n=========================================================")
     print(f"🧠 MOTOR DE INVERSIÓN (M-ART + SO3 + FAST-MATRIX)")
     print(f"=========================================================")
@@ -130,11 +131,9 @@ def reconstruir_odf_nnls(lista_pfs_exp, fase_cristal, simetria_muestra=None, tip
             polos_data_base = np.einsum('bij,pj->bpi', R_c2s, p_c)
             polos_flat = polos_data_base.reshape(-1, 3) 
             
-            # Cálculo rápido:
             dot_prod_flat = np.abs(np.dot(polos_flat, v_g.T)) 
             vals_flat = np.zeros_like(dot_prod_flat, dtype=np.float32)
             
-            # TRUCO DE ACELERACIÓN: Solo evalúa kernel si el ángulo es < 45°
             mascara = dot_prod_flat > 0.707
             if np.any(mascara):
                 om_mask = np.arccos(np.clip(dot_prod_flat[mascara], 0.0, 1.0))
@@ -146,7 +145,6 @@ def reconstruir_odf_nnls(lista_pfs_exp, fase_cristal, simetria_muestra=None, tip
             A[fila_inicio : fila_inicio + M_pf, start:end] = suma_polos_pf.T
             fila_inicio += M_pf
             
-    # --- CALIBRACIÓN MUD ESTRICTA ---
     print(" -> Calibrando Matriz A a espacio MUD estricto (Topología SO3)...")
     w_metric = np.ones(N) / N
     
@@ -161,8 +159,8 @@ def reconstruir_odf_nnls(lista_pfs_exp, fase_cristal, simetria_muestra=None, tip
     # ====================================================================
     t_nnls_inicio = time.time()
     
-    tol_error = 1e-3         
-    max_iter_escala = 10    
+    # ✅ Asignamos las variables de control que entran por parámetro
+    max_iter_escala = max_iter    
     max_iter_mart = 10       
     alpha = 1.0             
     
@@ -199,6 +197,7 @@ def reconstruir_odf_nnls(lista_pfs_exp, fase_cristal, simetria_muestra=None, tip
                 residuo_actual = np.linalg.norm((A @ w) - b_target)
                 if residuo_interno_ant != np.inf:
                     mejora = (residuo_interno_ant - residuo_actual) / residuo_interno_ant
+                    # ✅ Usa el tol_error elegido por el usuario
                     if mejora < tol_error and mejora >= 0:
                         break
                 residuo_interno_ant = residuo_actual
@@ -231,6 +230,7 @@ def reconstruir_odf_nnls(lista_pfs_exp, fase_cristal, simetria_muestra=None, tip
         
         if residuo_global_anterior != np.inf:
             mejora_global = (residuo_global_anterior - residuo_global_actual) / residuo_global_anterior
+            # ✅ Usa el tol_error elegido por el usuario
             if iteracion > 5 and mejora_global < tol_error and mejora_global >= 0:
                 print(f"    * Convergencia suave alcanzada en ciclo externo {iteracion + 1}.")
                 break
@@ -243,14 +243,12 @@ def reconstruir_odf_nnls(lista_pfs_exp, fase_cristal, simetria_muestra=None, tip
     t_nnls_fin = time.time()
     
     # ====================================================================
-    # 6. FILTRO DE POLVO DINÁMICO (Acelera el graficado manteniendo textura)
+    # 6. FILTRO DE POLVO DINÁMICO
     # ====================================================================
     masa_discreta_original = np.sum(pesos_optimos)
-    
     umbral_polvo = np.max(pesos_optimos) * 0.005
     idx_activos = pesos_optimos > umbral_polvo
     
-    # Reasignamos el peso del polvo borrado al fondo isotrópico para no perder masa
     masa_polvo_borrado = np.sum(pesos_optimos[~idx_activos])
     peso_isotropico_final += masa_polvo_borrado
     
@@ -258,7 +256,6 @@ def reconstruir_odf_nnls(lista_pfs_exp, fase_cristal, simetria_muestra=None, tip
     pesos_limpios[idx_activos] = pesos_optimos[idx_activos]
     pesos_optimos = pesos_limpios
     
-    # Renormalización final estricta
     masa_discreta_nueva = np.sum(pesos_optimos)
     suma_total_final = masa_discreta_nueva + peso_isotropico_final
     if suma_total_final > 0:
@@ -276,9 +273,6 @@ def reconstruir_odf_nnls(lista_pfs_exp, fase_cristal, simetria_muestra=None, tip
     t_nnls = t_nnls_fin - t_nnls_inicio
     t_total = t_total_fin - t_total_inicio
     
-    # ====================================================================
-    # REPORTE EN PANTALLA
-    # ====================================================================
     print(f"\n=========================================================")
     print(f"📊 BALANCE DE MASA FINAL DE LA TEXTURA")
     print(f"=========================================================")
@@ -296,9 +290,6 @@ def reconstruir_odf_nnls(lista_pfs_exp, fase_cristal, simetria_muestra=None, tip
     print(f"    - Peso total (Fracción)   : {peso_isotropico_final * 100:.2f} %")
     print(f"=========================================================\n")
     
-    # ====================================================================
-    # 7. ACTUALIZACIÓN DE LOS DATOS EXPERIMENTALES Y ENSAMBLE
-    # ====================================================================
     for i, pf in enumerate(lista_pfs_exp):
         factor_total = factores_pre_escala[i] * factores_escala[i]
         pf.intensidades *= factor_total

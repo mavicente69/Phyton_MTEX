@@ -14,16 +14,27 @@ from utils_vector3d import proyectar_igual_area
 
 def _es_hexagonal(simetria, hkl):
     """
-    Detecta si la fase a proyectar es hexagonal analizando la simetría o el objeto Miller.
+    Detecta si la fase a proyectar es hexagonal. Busca tanto en el argumento
+    directo de simetría como en la metadata profunda del objeto Miller.
     """
     if simetria is not None:
         s = str(getattr(simetria, 'name', str(simetria))).lower()
         if '6' in s or 'hex' in s or 'd6' in s or 'c6' in s: 
             return True
+            
     if hasattr(hkl, 'phase') and hkl.phase is not None:
+        # 1. Buscamos el nombre del grupo puntual (Ej. "6/mmm")
+        pg = getattr(hkl.phase, 'point_group', None)
+        if pg is not None:
+            s = str(getattr(pg, 'name', str(pg))).lower()
+            if '6' in s or 'hex' in s or 'd6' in s or 'c6' in s:
+                return True
+                
+        # 2. Respaldo: Buscamos en el nombre de la fase (por si le pusieron "Titanio Alpha Hexagonal")
         p = str(getattr(hkl.phase, 'name', '')).lower()
         if 'hex' in p: 
             return True
+            
     return False
 
 class PoleFigure:
@@ -59,7 +70,6 @@ class PoleFigure:
         if _es_hexagonal(crystal_sym, hkl_miller):
             azim_h += np.pi / 2.0
         
-        # Delegamos el cálculo matemático a utils_fourier
         from utils_fourier import eval_pf_from_wigner
         intensidades = eval_pf_from_wigner(coefs_array, polar_h, azim_h, polar_y, azim_y)
 
@@ -84,16 +94,15 @@ class PoleFigure:
         theta, phi = 2.0 * np.arcsin(R / np.sqrt(2.0)), np.arctan2(puntos_2d[:, 1], puntos_2d[:, 0])
         polar_y, azim_y = theta, np.mod(phi, 2 * np.pi)
         
-        # EXTRACCIÓN CON ORIX: Respeta la matriz de orientación del cristal
+        # EXTRACCIÓN CON ORIX
         v_h = Vector3d(hkl_miller)
         polar_h = v_h.polar.flatten()[0]
         azim_h = v_h.azimuth.flatten()[0]
         
-        # PARCHE CONDICIONAL DE BUNGE PARA REDES HEXAGONALES
+        # EL PARCHE QUE FALLABA: Ahora _es_hexagonal busca a fondo en hkl_miller
         if _es_hexagonal(None, hkl_miller):
             azim_h += np.pi / 2.0
         
-        # Delegamos el cálculo matemático a utils_fourier
         from utils_fourier import eval_pf_from_bunge
         intensidades = eval_pf_from_bunge(C_bunge, polar_h, azim_h, polar_y, azim_y, A_cryst, B_samp)
         
@@ -147,30 +156,21 @@ def plot_pfs(lista_pfs, titulos=None, cmap='jet', max_val_global=False, direccio
     plt.show()
 
 def plot_pf_comparison(pfs_in, pfs_out, titulos=None, suptitle="Comparativa de Figuras de Polos", unificar_escala='hkl', direccion_x='horizontal'):
-    """
-    Dibuja una grilla 2xN comparando Figuras de Polos Originales vs Recalculadas.
-    """
     n = len(pfs_in)
     fig, axes = plt.subplots(2, n, figsize=(5 * n, 10))
-    
-    # Manejo de caso borde cuando solo hay 1 PF
-    if n == 1:
-        axes = np.array([[axes[0]], [axes[1]]])
+    if n == 1: axes = np.array([[axes[0]], [axes[1]]])
         
     for i in range(n):
-        # Unificar la barra de colores para que la comparación visual sea real
         max_val = None
         if unificar_escala == 'hkl':
             max_in = np.max(np.nan_to_num(pfs_in[i].intensidades, nan=0.0))
             max_out = np.max(np.nan_to_num(pfs_out[i].intensidades, nan=0.0))
             max_val = max(max_in, max_out)
 
-        # Fila Superior: Datos de Entrada (Original)
         pfs_in[i].plot(ax=axes[0, i], cmap='jet', max_val=max_val, direccion_x=direccion_x)
         titulo_in = f"{titulos[i]}\n(Original)" if titulos else "Original"
         axes[0, i].set_title(titulo_in, fontsize=14, pad=15)
 
-        # Fila Inferior: Datos de Salida (Recalculada)
         pfs_out[i].plot(ax=axes[1, i], cmap='jet', max_val=max_val, direccion_x=direccion_x)
         titulo_out = f"{titulos[i]}\n(Recalculada)" if titulos else "Recalculada"
         axes[1, i].set_title(titulo_out, fontsize=14, pad=15)

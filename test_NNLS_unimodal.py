@@ -143,8 +143,8 @@ def main():
         
         if MATERIAL == "zirconio":
             directorio_base = r"C:\Users\mavic\MiguelAngel\Texture Phyton\Exp_Data\Zr\N0"
-            directorio_base = r"C:\Users\mavic\MiguelAngel\Texture Phyton\Exp_Data\Zr\N1"
-            directorio_base = r"C:\Users\mavic\MiguelAngel\Texture Phyton\Exp_Data\Zr\N2"
+        #   directorio_base = r"C:\Users\mavic\MiguelAngel\Texture Phyton\Exp_Data\Zr\N1"
+        #   directorio_base = r"C:\Users\mavic\MiguelAngel\Texture Phyton\Exp_Data\Zr\N2"
             
             archivos_exp = [
                 {"file": "d1_part1_p1_Zr(100).txt", "hkil": [1, 0, -1, 0]},

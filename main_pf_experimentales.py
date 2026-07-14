@@ -38,7 +38,7 @@ def main():
         fase_activa = Phase(name="Zirconium", space_group=194, structure=Structure(lattice=lat_fase))
         
         directorio_base = r"C:\Users\mavic\MiguelAngel\Texture Phyton\Exp_Data\Zr\N2"
-        directorio_base = r"C:\Users\mavic\MiguelAngel\Texture Phyton\Exp_Data\Zr\N0"
+        #directorio_base = r"C:\Users\mavic\MiguelAngel\Texture Phyton\Exp_Data\Zr\N0"
         archivos_exp = [
             {"file": "d1_part1_p1_Zr(100).txt", "hkil": [1, 0, -1, 0]},
             {"file": "d1_part2_p1_Zr(002).txt", "hkil": [0, 0, 0, 2]},

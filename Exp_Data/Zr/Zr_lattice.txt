@@ -1,0 +1,14 @@
+% Simetria
+hexagonal
+
+% Coefficients C at 1.8 Angstroms sigma=C*1.8/lambda:
+% [1] Absorption [2] Incoherent Elastic [3] Inelastic
+BACKGROUND 0.185 0.02 0.04
+
+% Red de Bravais
+0 3.2283 0  
+ 2.7958 -1.61415 0
+0        0      5.1480
+%Base                          long scatte b (fm)      u02
+1	0	 0	    0	         6.44	0.0072188
+2 1.8639 0  2.5740           6.44	0.0072188

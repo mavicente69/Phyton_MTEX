@@ -1,0 +1,16 @@
+% Simetría del cristal
+cubic
+
+% Coefficients C at 1.8 Angstroms sigma=C*1.8/lambda: 
+% [1] Absorption [2] Incoherent Elastic [3] Inelastic
+BACKGROUND 0.231 0.0082 0.05
+
+% Red de Bravais
+4.0479 0      0
+0      4.0479 0
+0      0      4.0479
+%Base
+1	0	      0	          0	      3.449	 0.0101933
+2	2.0239	 2.0239  	  0	      3.449	 0.0101933
+3	0	     2.0239	  2.0239	  3.449	 0.0101933
+4	2.0239	 0	      2.0239	  3.449	 0.0101933

@@ -196,13 +196,13 @@ def calc_symmetry_projectors(L_max, crystal_sym, sample_sym=None):
     proj_C, proj_S = {}, {}
     for l in range(L_max + 1):
         T_cryst = build_Tl_matrix(l, pg_c)
-        proj_C[l] = np.real(np.mean(np.conj(T_cryst), axis=0))  # Forzar real
+        proj_C[l] = np.mean(np.conj(T_cryst), axis=0)
         
         if sample_sym is not None:
             T_samp = build_Tl_matrix(l, sample_sym)
-            proj_S[l] = np.real(np.mean(np.conj(T_samp), axis=0))
+            proj_S[l] = np.mean(np.conj(T_samp), axis=0)
         else:
-            proj_S[l] = np.eye(2 * l + 1, dtype=float)
+            proj_S[l] = np.eye(2 * l + 1, dtype=complex)
     return proj_C, proj_S
 
 def symmetrize_coefs(coefs_tri_array, L_max, proj_C, proj_S):
@@ -261,25 +261,10 @@ def sum_fourier_arrays(arrays_list):
 def calc_symmetry_coefficients(L_max, proj_C, proj_S):
     A_cryst, B_samp = {}, {}
     for l in range(L_max + 1):
-        # --- Cristal ---
-        # Tomamos la parte real y la hacemos simétrica (ya debería serlo)
-        P_C = np.real(proj_C[l])
-        # Buscamos base ortonormal real del subespacio invariante
-        # Usamos SVD de la matriz P_C (que es idempotente)
-        u, s, vh = np.linalg.svd(P_C, full_matrices=False)
-        # Los vectores con valor singular > 0.99 forman la base
-        idx = s > 0.99
-        A_cryst[l] = u[:, idx]  # Base real
-        
-        # --- Muestra ---
-        if proj_S[l] is not None:
-            P_S = np.real(proj_S[l])
-            u, s, vh = np.linalg.svd(P_S, full_matrices=False)
-            idx = s > 0.99
-            B_samp[l] = u[:, idx]
-        else:
-            B_samp[l] = np.eye(2 * l + 1, dtype=float)
-            
+        evals_c, evecs_c = np.linalg.eigh(proj_C[l])
+        A_cryst[l] = evecs_c[:, evals_c > 0.99] 
+        evals_s, evecs_s = np.linalg.eigh(proj_S[l])
+        B_samp[l] = evecs_s[:, evals_s > 0.99] 
     return A_cryst, B_samp
 
 def get_bunge_coefs(coefs_tri_array, L_max, A_cryst, B_samp):
@@ -384,12 +369,10 @@ def eval_sym_sph_harm(l, polar, azimuthal, sym_or_proj, is_sample=False):
             # Construimos la matriz T_l y extraemos los proyectores al vuelo
             pg = getattr(sym_or_proj, 'point_group', sym_or_proj)
             T_sym = build_Tl_matrix(l, pg)
-            proj_raw = np.real(np.mean(np.conj(T_sym), axis=0))  # Forzar real
-            # Usamos SVD para obtener base real
-            u, s, vh = np.linalg.svd(proj_raw, full_matrices=False)
-            idx = s > 0.99
+            proj_raw = np.mean(np.conj(T_sym), axis=0)
+            evals, evecs = np.linalg.eigh(proj_raw)
             # Guardamos los autovectores activos en caché
-            _SYMMETRY_EIGEN_CACHE[cache_key] = u[:, idx]
+            _SYMMETRY_EIGEN_CACHE[cache_key] = evecs[:, evals > 0.99]
             
         proj_matrix = _SYMMETRY_EIGEN_CACHE[cache_key]
         
